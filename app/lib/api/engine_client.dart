@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// A device as reported by GET /api/v1/devices.
 class Device {
@@ -43,11 +46,47 @@ class EngineException implements Exception {
   String toString() => 'EngineException: $message';
 }
 
-/// Thin REST client for the OpenMob engine (see docs/API.md).
-class EngineClient {
-  EngineClient(String baseUrl) : baseUrl = _normalize(baseUrl);
-
+/// Interface to an OpenMob engine (see docs/API.md).
+///
+/// [HttpEngineClient] talks to a real engine over HTTP/WS;
+/// [DemoEngineClient] (api/demo_engine_client.dart) fakes one in memory so
+/// the app can be exercised without any engine on the network.
+abstract class EngineClient {
   /// e.g. http://127.0.0.1:8930 (no trailing slash, no /api/v1).
+  String get baseUrl;
+
+  /// Returns the engine version, or throws if the engine is unreachable.
+  Future<String> health();
+
+  Future<List<Device>> devices();
+
+  Future<void> tap(String deviceId, int x, int y);
+
+  Future<void> swipe(
+    String deviceId, {
+    required int x1,
+    required int y1,
+    required int x2,
+    required int y2,
+    required int durationMs,
+  });
+
+  Future<void> sendText(String deviceId, String text);
+
+  Future<void> pressKey(String deviceId, String key);
+
+  /// Live screen frames (JPEG/PNG bytes, one event per frame) for [deviceId].
+  ///
+  /// Single-subscription; cancel to stop. Errors/closes when the stream is
+  /// lost — the caller is expected to re-call to reconnect.
+  Stream<Uint8List> frames(String deviceId);
+}
+
+/// Thin REST/WebSocket client for a real OpenMob engine.
+class HttpEngineClient implements EngineClient {
+  HttpEngineClient(String baseUrl) : baseUrl = _normalize(baseUrl);
+
+  @override
   final String baseUrl;
 
   static const Duration _timeout = Duration(seconds: 4);
@@ -69,7 +108,7 @@ class EngineClient {
     );
   }
 
-  /// Returns the engine version, or throws if the engine is unreachable.
+  @override
   Future<String> health() async {
     final res = await http.get(_api('/health')).timeout(_timeout);
     if (res.statusCode != 200) {
@@ -79,6 +118,7 @@ class EngineClient {
     return body['version'] as String? ?? '?';
   }
 
+  @override
   Future<List<Device>> devices() async {
     final res = await http.get(_api('/devices')).timeout(_timeout);
     if (res.statusCode != 200) {
@@ -90,9 +130,11 @@ class EngineClient {
         .toList();
   }
 
+  @override
   Future<void> tap(String deviceId, int x, int y) =>
       _post('/devices/$deviceId/tap', {'x': x, 'y': y});
 
+  @override
   Future<void> swipe(
     String deviceId, {
     required int x1,
@@ -109,11 +151,48 @@ class EngineClient {
         'duration_ms': durationMs,
       });
 
+  @override
   Future<void> sendText(String deviceId, String text) =>
       _post('/devices/$deviceId/text', {'text': text});
 
+  @override
   Future<void> pressKey(String deviceId, String key) =>
       _post('/devices/$deviceId/key', {'key': key});
+
+  @override
+  Stream<Uint8List> frames(String deviceId) {
+    WebSocketChannel? channel;
+    StreamSubscription<dynamic>? sub;
+    late final StreamController<Uint8List> controller;
+    controller = StreamController<Uint8List>(
+      onListen: () {
+        try {
+          channel = WebSocketChannel.connect(streamUri(deviceId));
+        } catch (e) {
+          controller.addError(EngineException('stream failed: $e'));
+          controller.close();
+          return;
+        }
+        sub = channel!.stream.listen(
+          (message) {
+            if (message is List<int>) {
+              controller.add(message is Uint8List
+                  ? message
+                  : Uint8List.fromList(message));
+            }
+          },
+          onError: controller.addError,
+          onDone: controller.close,
+          cancelOnError: true,
+        );
+      },
+      onCancel: () async {
+        await sub?.cancel();
+        await channel?.sink.close();
+      },
+    );
+    return controller.stream;
+  }
 
   Future<void> _post(String path, Map<String, dynamic> body) async {
     final res = await http
