@@ -24,3 +24,6 @@ app/ephemeral/
 # Local env / secrets
 .env
 *.local
+
+# iOS runner (WDA clone + build artifacts)
+runner/ios/WebDriverAgent/
