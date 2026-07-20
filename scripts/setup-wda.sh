@@ -39,12 +39,22 @@ else
     git clone --depth 1 "${WDA_REPO_URL}" "${WDA_DIR}"
 fi
 
+# --- Rebrand runner as OpenMob Runner (BSD license kept in THIRD_PARTY_LICENSES.md) ---
+
+RUNNER_PLIST="${WDA_DIR}/WebDriverAgentRunner/Info.plist"
+if [[ -f "${RUNNER_PLIST}" ]]; then
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OpenMob Runner'" "${RUNNER_PLIST}" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OpenMob Runner'" "${RUNNER_PLIST}"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName 'OpenMob Runner'" "${RUNNER_PLIST}" 2>/dev/null || true
+    log "Runner display name set to 'OpenMob Runner'."
+fi
+
 # --- Resolve device UDID ---------------------------------------------------
 
 UDID="${1:-}"
 if [[ -z "${UDID}" ]]; then
     log "No UDID given — auto-detecting via pymobiledevice3 ..."
-    UDID="$(uvx pymobiledevice3 usbmux list --no-color 2>/dev/null \
+    UDID="$(uvx pymobiledevice3 usbmux list 2>/dev/null \
         | /usr/bin/python3 -c 'import json,sys
 try:
     devices = json.load(sys.stdin)
@@ -75,10 +85,26 @@ xcodebuild \
 RUNNER_APP="${DERIVED_DATA}/Build/Products/Debug-iphoneos/WebDriverAgentRunner-Runner.app"
 [[ -d "${RUNNER_APP}" ]] || die "Build succeeded but runner app not found at ${RUNNER_APP}"
 
+# --- Rebrand the BUILT bundle (Xcode generates the runner's Info.plist,   --
+# --- ignoring the source plist) and re-sign it                            --
+
+/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OpenMob Runner'" "${RUNNER_APP}/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OpenMob Runner'" "${RUNNER_APP}/Info.plist"
+SIGN_ID="$(security find-identity -v -p codesigning | grep -m1 'Apple Development' | awk '{print $2}')"
+[[ -n "${SIGN_ID}" ]] || die "No 'Apple Development' signing identity found in keychain."
+codesign -f --preserve-metadata=identifier,entitlements,flags -s "${SIGN_ID}" "${RUNNER_APP}"
+log "Runner rebranded to 'OpenMob Runner' and re-signed."
+
 # --- Install onto the phone ------------------------------------------------
 
 log "Installing runner app onto device ..."
 xcrun devicectl device install app --device "${UDID}" "${RUNNER_APP}"
+
+# --- Launch standalone (no xcodebuild session needed) ----------------------
+
+log "Launching OpenMob Runner ..."
+xcrun devicectl device process launch --terminate-existing --device "${UDID}" "${BUNDLE_ID}.xctrunner" || \
+    log "Launch failed — unlock the phone and re-run, or use the xcodebuild fallback below."
 
 log "Done. Runner installed as ${BUNDLE_ID}.xctrunner"
 log "Next steps (see docs/IOS.md):"
