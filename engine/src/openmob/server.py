@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from openmob import __version__, flutter, virtual
+from openmob import __version__, flutter, flutter_run, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, SessionNotFound
 from openmob.device import Device, DeviceError
 from openmob.logstream import LogScope, matches_filter
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 manager = DeviceManager()
 debug_manager = DebugSessionManager()
+flutter_manager = flutter_run.FlutterRunManager()
 router = APIRouter(prefix="/api/v1")
 
 # Devices for which the video->poll fallback has already been logged.
@@ -369,14 +370,103 @@ def system_info(device_id: str) -> dict[str, str | int]:
     return manager.get(device_id).system_info()
 
 
+class FlutterRunBody(BaseModel):
+    project_path: str
+    mode: str = "debug"
+
+
 @router.get("/devices/{device_id}/flutter/vm-service")
 def flutter_vm_service(device_id: str) -> dict[str, str]:
     return flutter.vm_service(manager.get(device_id))
 
 
+@router.post("/devices/{device_id}/flutter/run")
+def flutter_run_start(device_id: str, body: FlutterRunBody) -> dict[str, object]:
+    session = flutter_manager.start(manager.get(device_id), body.project_path, body.mode)
+    return session.info()
+
+
+@router.get("/devices/{device_id}/flutter/session")
+def flutter_run_session(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None:
+        return {"running": False, "session": None}
+    return session.info()
+
+
+@router.delete("/devices/{device_id}/flutter/session")
+def flutter_run_stop(device_id: str) -> dict[str, object]:
+    return flutter_manager.stop(device_id)
+
+
 @router.post("/devices/{device_id}/flutter/hot-reload")
 def flutter_hot_reload(device_id: str) -> dict[str, object]:
-    return flutter.hot_reload(manager.get(device_id))
+    """Hot reload: use the managed run session when present, else fall back to the
+    Dart VM service reloadSources path (only works for externally-started apps)."""
+    session = flutter_manager.get(device_id)
+    if session is not None and session.running:
+        return {"managed": True, **session.reload(full_restart=False)}
+    logger.info(
+        "no managed flutter run session for %s; falling back to VM-service reloadSources",
+        device_id,
+    )
+    return {"managed": False, **flutter.hot_reload(manager.get(device_id))}
+
+
+@router.post("/devices/{device_id}/flutter/hot-restart")
+def flutter_hot_restart(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running:
+        raise DeviceError(
+            "hot restart needs an OpenMob-managed `flutter run` session; "
+            "start one with POST /devices/{id}/flutter/run"
+        )
+    return {"managed": True, **session.reload(full_restart=True)}
+
+
+@router.get("/devices/{device_id}/flutter/devtools")
+def flutter_devtools(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running or not session.vm_service_uri:
+        raise DeviceError(
+            "no running flutter run session with a VM service for this device; "
+            "start one with POST /devices/{id}/flutter/run"
+        )
+    return flutter_manager.devtools_url(session)
+
+
+@router.websocket("/devices/{device_id}/flutter/run/logs")
+async def flutter_run_logs(websocket: WebSocket, device_id: str) -> None:
+    """Stream the managed run session's stdout/stderr (build + app logs, reload
+    confirmations), one text message per line, until the client disconnects."""
+    await websocket.accept()
+    session = flutter_manager.get(device_id)
+    if session is None:
+        await websocket.close(code=4004, reason="no flutter run session for this device")
+        return
+    stream = session.stream()
+
+    async def pump() -> None:
+        while True:
+            line = await run_in_threadpool(stream.readline)
+            if line is None:
+                return
+            await websocket.send_text(line)
+
+    async def watch_disconnect() -> None:
+        while True:
+            await websocket.receive()
+
+    tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(watch_disconnect())]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.exception()
+    finally:
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(stream.close)
 
 
 @router.websocket("/devices/{device_id}/logs/stream")

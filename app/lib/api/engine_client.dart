@@ -434,24 +434,81 @@ class EngineClient {
   Future<void> pressKey(String deviceId, String key) =>
       _post('/devices/$deviceId/key', {'key': key});
 
+  // --- Flutter run sessions (managed hot reload / restart / DevTools) ---
+
+  /// Current managed `flutter run` session for [deviceId] (running:false if none).
+  Future<Map<String, dynamic>> flutterSession(String deviceId) =>
+      _getJson('/devices/$deviceId/flutter/session');
+
+  /// Launches [projectPath] on [deviceId] via `flutter run --machine`. The cold
+  /// build can take minutes, so this call uses a long timeout.
+  Future<Map<String, dynamic>> flutterRun(
+    String deviceId,
+    String projectPath, {
+    String mode = 'debug',
+  }) =>
+      _postJson(
+        '/devices/$deviceId/flutter/run',
+        {'project_path': projectPath, 'mode': mode},
+        timeout: const Duration(minutes: 6),
+      );
+
+  Future<Map<String, dynamic>> flutterHotReload(String deviceId) => _postJson(
+        '/devices/$deviceId/flutter/hot-reload',
+        const {},
+        timeout: const Duration(seconds: 90),
+      );
+
+  Future<Map<String, dynamic>> flutterHotRestart(String deviceId) => _postJson(
+        '/devices/$deviceId/flutter/hot-restart',
+        const {},
+        timeout: const Duration(seconds: 90),
+      );
+
+  Future<Map<String, dynamic>> flutterDevtools(String deviceId) => _getJson(
+        '/devices/$deviceId/flutter/devtools',
+        timeout: const Duration(seconds: 45),
+      );
+
+  Future<void> flutterStop(String deviceId) =>
+      _delete('/devices/$deviceId/flutter/session');
+
   Future<void> _post(String path, Map<String, dynamic> body) =>
       _postJson(path, body);
 
-  /// POSTs [body] and returns the decoded JSON object response.
   Future<Map<String, dynamic>> _postJson(
-      String path, Map<String, dynamic> body) async {
+    String path,
+    Map<String, dynamic> body, {
+    Duration? timeout,
+  }) async {
     final res = await http
         .post(
           _api(path),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode(body),
         )
-        .timeout(_timeout);
+        .timeout(timeout ?? _timeout);
+    return _decode(res);
+  }
+
+  Future<Map<String, dynamic>> _getJson(String path, {Duration? timeout}) async {
+    final res = await http.get(_api(path)).timeout(timeout ?? _timeout);
+    return _decode(res);
+  }
+
+  Future<Map<String, dynamic>> _delete(String path, {Duration? timeout}) async {
+    final res = await http.delete(_api(path)).timeout(timeout ?? _timeout);
+    return _decode(res);
+  }
+
+  /// Validates the response and returns its JSON body (empty map if none).
+  Map<String, dynamic> _decode(http.Response res) {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       String detail = 'HTTP ${res.statusCode}';
       try {
-        final parsed = jsonDecode(res.body) as Map<String, dynamic>;
-        detail = parsed['detail'] as String? ?? detail;
+        detail =
+            (jsonDecode(res.body) as Map<String, dynamic>)['detail'] as String? ??
+                detail;
       } catch (_) {
         // keep generic detail
       }
