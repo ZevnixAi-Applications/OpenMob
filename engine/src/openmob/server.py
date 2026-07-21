@@ -148,7 +148,8 @@ async def stream(websocket: WebSocket, device_id: str) -> None:
     """
     await websocket.accept()
     try:
-        device = manager.get(device_id)
+        # Threadpool: discovery is blocking and uses asyncio.run() internally.
+        device = await run_in_threadpool(manager.get, device_id)
     except DeviceNotFound:
         await websocket.close(code=4004, reason=f"device {device_id!r} not found")
         return
