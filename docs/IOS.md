@@ -200,6 +200,47 @@ Sessions die if WDA restarts; treat `invalid session id` errors as a cue to
 `POST /session` again. Screenshot scale/quality for the MJPEG stream can be tuned via
 session capability `settings` (`mjpegServerScreenshotQuality`, `mjpegServerFramerate`).
 
+## MJPEG screen mirror (how the engine streams the screen)
+
+The engine's WebSocket mirror (`/api/v1/devices/{id}/stream`, docs/API.md) does **not**
+poll `GET /screenshot` for iOS anymore. It connects to WDA's MJPEG server and relays
+JPEG frames directly — no re-encode, roughly 10x the frame rate of screenshot polling.
+
+Setup — one extra forward next to the WDA one:
+
+```sh
+uvx pymobiledevice3 usbmux forward 9100 9100 &   # phone MJPEG port -> local 9100
+```
+
+If local port 9100 is taken by something else, forward to a different local port and
+tell the engine:
+
+```sh
+uvx pymobiledevice3 usbmux forward 9110 9100 &
+OPENMOB_WDA_MJPEG_PORT=9110 openmob serve
+```
+
+Behavior and caveats:
+
+- **Config**: `OPENMOB_WDA_MJPEG_PORT` (default `9100`) — the *local* port the engine
+  connects to at `127.0.0.1`. The phone side is always WDA's MJPEG port.
+- **Frames only flow while a WDA session exists** on the phone (the MJPEG server
+  accepts connections regardless, but stays silent without a session).
+- **Fallback**: if the MJPEG connection is refused, times out, or goes silent for 5 s,
+  the WS endpoint transparently falls back to the old screenshot-poll loop
+  (`GET /screenshot` + PNG→JPEG re-encode, ~1 fps). Android streaming is unchanged.
+- **Latency governance**: the engine reads the MJPEG socket continuously, keeps only
+  the newest frame, and relays at most ~15 fps to the WS client — a slow client gets
+  fresher frames, never a growing backlog.
+- **Stream parameters**: WDA defaults are `mjpegServerFramerate` 10 fps,
+  `mjpegServerScreenshotQuality` 25, `mjpegScalingFactor` 100. Tuning them requires
+  the session-scoped settings API (`POST /session/{id}/appium/settings`), so the
+  engine deliberately leaves them alone (it never creates sessions for streaming);
+  set them via session capabilities if you own the WDA session.
+- **Multipart quirk**: WDA advertises `boundary=--BoundaryString` but delimits parts
+  with that literal string (not `--` + boundary as RFC 2046 says). The engine's parser
+  keys on each part's `Content-Length` header instead of the boundary text.
+
 ## Troubleshooting
 
 - **`xcodebuild` exit code 65 / signing errors** — almost always provisioning. Check:

@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import httpx
@@ -28,10 +29,13 @@ from openmob.device import Device, DeviceError
 from openmob.logstream import LogStream, apply_filter
 
 DEFAULT_WDA_URL = "http://127.0.0.1:8100"
+DEFAULT_MJPEG_PORT = 9100
 
 WDA_TIMEOUT = 5.0
 SCREENSHOT_TIMEOUT = 15.0
 LOCKDOWN_TIMEOUT = 5.0
+MJPEG_CONNECT_TIMEOUT = 3.0
+MJPEG_READ_TIMEOUT = 5.0
 
 _WDA_UNREACHABLE = "WDA not running on device — see docs/IOS.md"
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -101,6 +105,12 @@ def wda_url() -> str:
     return os.environ.get("OPENMOB_WDA_URL", DEFAULT_WDA_URL)
 
 
+def mjpeg_url() -> str:
+    """URL of WDA's MJPEG screen stream (local port of a usbmux forward to phone :9100)."""
+    port = os.environ.get("OPENMOB_WDA_MJPEG_PORT", str(DEFAULT_MJPEG_PORT))
+    return f"http://127.0.0.1:{port}"
+
+
 def pixels_to_points(value: float, scale: float) -> float:
     """Convert device pixels (our API contract) to points (what WDA expects)."""
     return round(value / scale, 2)
@@ -111,6 +121,59 @@ def parse_png_size(png: bytes) -> tuple[int, int]:
     if not png.startswith(_PNG_MAGIC) or len(png) < 24:
         raise DeviceError("not a PNG")
     return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+
+
+_JPEG_SOI = b"\xff\xd8"
+_CONTENT_LENGTH = re.compile(rb"(?im)^content-length:\s*(\d+)\s*$")
+
+
+class MjpegParser:
+    """Incremental parser for a multipart/x-mixed-replace JPEG stream (WDA's MJPEG server).
+
+    Frames are delimited by part header blocks (terminated by CRLFCRLF) carrying a
+    Content-Length, which WDA always sends. The boundary string is deliberately not
+    trusted: WDA declares ``boundary=--BoundaryString`` in the Content-Type header and
+    then uses that same string (not ``--`` + boundary) as the delimiter, violating
+    RFC 2046. Header blocks without a Content-Length (HTTP response preamble, stray
+    CRLFs between parts) are skipped, and part bodies that are not JPEG are dropped,
+    so the parser resynchronizes on the next part.
+    """
+
+    MAX_HEADER_BLOCK = 8192
+    MAX_FRAME = 32 * 1024 * 1024
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self._expected: int | None = None  # body length of the part being read
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        """Consume a chunk of stream bytes; return any complete JPEG frames."""
+        self._buf += chunk
+        frames: list[bytes] = []
+        while True:
+            if self._expected is None:
+                end = self._buf.find(b"\r\n\r\n")
+                if end < 0:
+                    if len(self._buf) > self.MAX_HEADER_BLOCK:
+                        del self._buf[: -len(b"\r\n\r")]  # keep a possible partial terminator
+                    break
+                block = bytes(self._buf[:end])
+                del self._buf[: end + 4]
+                if match := _CONTENT_LENGTH.search(block):
+                    length = int(match.group(1))
+                    if length > self.MAX_FRAME:
+                        raise DeviceError(f"MJPEG frame too large ({length} bytes)")
+                    self._expected = length
+                # else: preamble or junk block — skip it.
+            else:
+                if len(self._buf) < self._expected:
+                    break
+                body = bytes(self._buf[: self._expected])
+                del self._buf[: self._expected]
+                self._expected = None
+                if body.startswith(_JPEG_SOI):
+                    frames.append(body)
+        return frames
 
 
 class _InvalidSession(DeviceError):
@@ -238,6 +301,29 @@ class IosDevice(Device):
         if not png.startswith(_PNG_MAGIC):
             raise DeviceError("WDA screenshot did not return a PNG")
         return png
+
+    async def stream_frames(self) -> AsyncIterator[bytes]:
+        """Yield JPEG frames from WDA's MJPEG server as they arrive.
+
+        Frames flow while a WDA session exists on the phone. Raises DeviceError when
+        the stream is unavailable (connection refused, no frames within the read
+        timeout), letting callers fall back to screenshot polling.
+        """
+        url = mjpeg_url()
+        parser = MjpegParser()
+        timeout = httpx.Timeout(MJPEG_READ_TIMEOUT, connect=MJPEG_CONNECT_TIMEOUT)
+        try:
+            async with (
+                httpx.AsyncClient(timeout=timeout) as client,
+                client.stream("GET", url) as response,
+            ):
+                if response.status_code != 200:
+                    raise DeviceError(f"WDA MJPEG server at {url}: HTTP {response.status_code}")
+                async for chunk in response.aiter_raw():
+                    for frame in parser.feed(chunk):
+                        yield frame
+        except httpx.HTTPError as exc:
+            raise DeviceError(f"WDA MJPEG stream unavailable at {url}: {exc}") from exc
 
     def tap(self, x: int, y: int) -> None:
         scale = self._screen_geometry()[2]

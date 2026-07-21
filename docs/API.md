@@ -66,11 +66,7 @@ exact commands to run. Sessions idle for 10 minutes are detached automatically.
 
 ## Virtual devices
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/devices/virtual-devices` (`/api/v1/virtual-devices`) | list launchable AVDs and simulators |
-| POST | `/api/v1/virtual-devices/launch` | `{"name"}` → boot an AVD/simulator |
-
+The `/virtual-devices` endpoints (listed in the REST table above) launch AVDs/simulators.
 Virtual devices are Android AVDs and iOS Simulators defined on this machine; once
 booted they appear in `/devices` like any other device (`device_id` is the adb serial /
 simulator UDID). See `docs/VIRTUAL_DEVICES.md`.
@@ -79,7 +75,12 @@ simulator UDID). See `docs/VIRTUAL_DEVICES.md`.
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/stream`
 
-Server pushes binary JPEG frames (one WebSocket binary message per frame) at ~5–10 fps. Client sends nothing; close to stop.
+Server pushes binary JPEG frames (one WebSocket binary message per frame). Client sends nothing; close to stop.
+
+- **iOS**: frames are relayed from WDA's MJPEG screen stream (see docs/IOS.md), capped at ~15 fps; only the newest frame is sent, stale frames are dropped. If the MJPEG stream is unavailable, the server falls back to screenshot polling (~1 fps in practice).
+- **Android** (and the iOS fallback): screenshot-poll loop at up to ~8 fps.
+
+The wire contract is identical in all cases: binary JPEG messages, no metadata.
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/logs/stream?filter=str`
 
