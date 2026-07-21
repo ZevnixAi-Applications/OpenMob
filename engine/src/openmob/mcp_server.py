@@ -1,16 +1,31 @@
 """MCP stdio server exposing device control tools to AI agents."""
 
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP, Image
 
+from openmob import flutter, flutter_run, virtual
+from openmob.debugger import CapabilityError, DebugError, DebugSessionManager
+from openmob.device import DeviceError
+from openmob.logstream import LogScope
 from openmob.manager import DeviceManager
 
 manager = DeviceManager()
+debug_manager = DebugSessionManager()
+flutter_manager = flutter_run.FlutterRunManager()
 
 mcp = FastMCP(
     "openmob",
     instructions=(
         "Control connected Android/iOS devices: list them, take screenshots, "
-        "tap, swipe, type, press keys, and manage apps. Coordinates are device pixels."
+        "tap, swipe, type, press keys, and manage apps. Coordinates are device pixels. "
+        "debug_* tools drive an interactive lldb session against an iOS app "
+        "(simulator UDIDs attach directly; real devices need a tunnel, errors explain how). "
+        "Developer tools: device logs (get_logs), crash reports (get_crash_logs), "
+        "deep links (open_url), file transfer (push_file/pull_file), device_info, and "
+        "Flutter debugging: launch a project with flutter_run for real hot reload/"
+        "restart (flutter_hot_reload, flutter_hot_restart, flutter_stop, "
+        "flutter_devtools_url), or flutter_vm_service to inspect an app started elsewhere."
     ),
 )
 
@@ -80,6 +95,292 @@ def launch_app(device_id: str, package: str) -> str:
     """Launch an app by package identifier."""
     manager.get(device_id).launch_app(package)
     return "ok"
+
+
+@mcp.tool()
+def debug_attach(
+    device_id: str,
+    pid: int | None = None,
+    bundle_id: str | None = None,
+    breakpoints: list[str] | None = None,
+    debugserver_url: str | None = None,
+) -> dict:
+    """Attach an lldb debug session to an iOS app on the given device (one per device).
+
+    Provide pid or bundle_id (bundle id is resolved to the running process; launch the
+    app first). Optional breakpoints (e.g. "File.swift:42", "-[Class method:]") are
+    armed before the app resumes. Returns session info; the app keeps running.
+    """
+    try:
+        session, attach = debug_manager.create(
+            device_id=device_id,
+            pid=pid,
+            bundle_id=bundle_id,
+            breakpoints=breakpoints,
+            debugserver_url=debugserver_url,
+        )
+    except CapabilityError as exc:
+        return {"error": "capability_missing", "detail": str(exc), "commands": exc.commands}
+    return {**session.info(), "attach": attach}
+
+
+@mcp.tool()
+def debug_breakpoint(
+    device_id: str, op: str, spec: str | None = None, id: int | None = None
+) -> dict:
+    """Manage breakpoints in the device's debug session.
+
+    op="add" needs spec ("File.swift:42", "-[Class method:]", or a symbol name);
+    op="remove" needs id; op="list" returns all breakpoints with hit counts.
+    """
+    session = debug_manager.get_by_device(device_id)
+    if op == "add":
+        if not spec:
+            raise DebugError("op='add' requires spec")
+        return session.breakpoint_set(spec)
+    if op == "remove":
+        if id is None:
+            raise DebugError("op='remove' requires id")
+        return session.breakpoint_delete(id)
+    if op == "list":
+        return {"breakpoints": session.breakpoint_list()}
+    raise DebugError(f"unknown op {op!r} (expected add/remove/list)")
+
+
+@mcp.tool()
+def debug_step(device_id: str, kind: str) -> dict:
+    """Advance the debugged app: kind = "in" | "over" | "out" | "continue" | "pause".
+
+    in/over/out step the stopped thread and return the new frame; continue resumes
+    until the next breakpoint (poll debug_state); pause interrupts a running app.
+    """
+    return debug_manager.get_by_device(device_id).step(kind)
+
+
+@mcp.tool()
+def debug_eval(device_id: str, expression: str, frame_id: int | None = None) -> dict:
+    """Evaluate an expression (ObjC/Swift/C) in a stopped frame of the debugged app."""
+    return debug_manager.get_by_device(device_id).eval(expression, frame_id)
+
+
+@mcp.tool()
+def debug_state(
+    device_id: str, stack: bool = True, vars: bool = True, threads: bool = False
+) -> dict:
+    """Report the debug session: process state, breakpoints, and when stopped the
+    stop reason, backtrace, and frame-0 locals (set threads=True for all threads)."""
+    return debug_manager.get_by_device(device_id).state(
+        stack=stack, variables=vars, threads=threads
+    )
+
+
+@mcp.tool()
+def debug_detach(device_id: str, kill: bool = False) -> dict:
+    """End the device's debug session; the app keeps running unless kill=True."""
+    session = debug_manager.get_by_device(device_id)
+    return debug_manager.remove(session.id, kill=kill)
+
+
+@mcp.tool()
+def get_logs(
+    device_id: str,
+    lines: int = 200,
+    filter: str = "",
+    package: str = "",
+    scope: str = "",
+    flutter: bool = False,
+) -> str:
+    """Get recent logs, scoped to one app instead of the whole device by default.
+
+    Pass `package` to scope to that app's live process (the useful case: an app's own
+    output, including Flutter print/debugPrint), or `scope="foreground"` to auto-target
+    the foreground app (Android). `flutter=True` narrows to Flutter framework output.
+    With none of these it returns the whole-device log. `filter` is a case-insensitive
+    substring match. A scoped app that is not running returns an empty string.
+    """
+    log_scope = LogScope(
+        package=package or None,
+        foreground=scope == "foreground",
+        flutter=flutter,
+    )
+    return manager.get(device_id).logs(
+        lines=lines,
+        filter_str=filter or None,
+        scope=log_scope if (log_scope.is_app_scoped or log_scope.flutter) else None,
+    )
+
+
+@mcp.tool()
+def save_screenshot(device_id: str, path: str) -> str:
+    """Capture the device screen and write it as a PNG to an absolute host path."""
+    target = Path(path)
+    if not target.is_absolute():
+        raise DeviceError(f"path must be absolute: {path}")
+    png = manager.get(device_id).screenshot()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(png)
+    return str(target)
+
+
+@mcp.tool()
+def get_crash_logs(device_id: str, limit: int = 5) -> list[dict[str, str]]:
+    """Get the most recent app crash reports (newest first) with parsed summaries."""
+    return manager.get(device_id).crash_reports(limit=limit)
+
+
+@mcp.tool()
+def open_url(device_id: str, url: str) -> str:
+    """Open a URL or deep link on the device."""
+    manager.get(device_id).open_url(url)
+    return "ok"
+
+
+@mcp.tool()
+def clear_app_data(device_id: str, package: str) -> str:
+    """Clear an app's data and cache (Android only)."""
+    manager.get(device_id).clear_app_data(package)
+    return "ok"
+
+
+@mcp.tool()
+def force_stop(device_id: str, package: str) -> str:
+    """Force-stop a running app by package/bundle identifier."""
+    manager.get(device_id).force_stop(package)
+    return "ok"
+
+
+@mcp.tool()
+def push_file(device_id: str, local_path: str, device_path: str) -> str:
+    """Copy a local file to the device (iOS: `bundle.id:/path` targets an app container)."""
+    manager.get(device_id).push_file(local_path, device_path)
+    return "ok"
+
+
+@mcp.tool()
+def pull_file(device_id: str, device_path: str, local_path: str) -> str:
+    """Copy a file from the device to the local machine."""
+    manager.get(device_id).pull_file(device_path, local_path)
+    return "ok"
+
+
+@mcp.tool()
+def device_info(device_id: str) -> dict[str, str | int]:
+    """Get battery percentage, OS version, and model details for a device."""
+    return manager.get(device_id).system_info()
+
+
+@mcp.tool()
+def flutter_vm_service(device_id: str) -> dict[str, str]:
+    """Find a running debug Flutter app's Dart VM service and forward it to the host."""
+    return flutter.vm_service(manager.get(device_id))
+
+
+@mcp.tool()
+def flutter_run(device_id: str, project_path: str, mode: str = "debug") -> dict[str, object]:
+    """Launch a Flutter project on a device via `flutter run --machine` (managed session).
+
+    project_path must be a Flutter project dir (has pubspec.yaml); mode is "debug"
+    (default, hot reload works) or "profile". The tool owns the running app, so
+    flutter_hot_reload/flutter_hot_restart then genuinely reload it. Returns the
+    session with app_id and vm_service_uri once the app has started.
+    """
+    session = flutter_manager.start(manager.get(device_id), project_path, mode)
+    return session.info()
+
+
+@mcp.tool()
+def flutter_hot_reload(device_id: str) -> dict[str, object]:
+    """Hot-reload the running debug Flutter app.
+
+    Uses the OpenMob-managed `flutter run` session when one is active (a real hot
+    reload — the tool owns the kernel compiler). With no managed session it falls
+    back to the Dart VM service reloadSources path, which only works for apps
+    started from a `flutter run` elsewhere (an installed APK rejects it).
+    """
+    session = flutter_manager.get(device_id)
+    if session is not None and session.running:
+        return {"managed": True, **session.reload(full_restart=False)}
+    return {"managed": False, **flutter.hot_reload(manager.get(device_id))}
+
+
+@mcp.tool()
+def flutter_hot_restart(device_id: str) -> dict[str, object]:
+    """Hot-restart (full restart) the app in the managed `flutter run` session."""
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running:
+        raise DeviceError(
+            "hot restart needs a managed `flutter run` session; start one with flutter_run"
+        )
+    return {"managed": True, **session.reload(full_restart=True)}
+
+
+@mcp.tool()
+def flutter_stop(device_id: str) -> dict[str, object]:
+    """Stop the OpenMob-managed `flutter run` session for a device."""
+    return flutter_manager.stop(device_id)
+
+
+@mcp.tool()
+def flutter_devtools_url(device_id: str) -> dict[str, object]:
+    """Return a serveable DevTools URL wired to the managed app's VM service."""
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running or not session.vm_service_uri:
+        raise DeviceError("no running flutter run session with a VM service; start one with flutter_run")
+    return flutter_manager.devtools_url(session)
+
+
+@mcp.tool()
+def list_virtual_devices() -> list[dict[str, str | None]]:
+    """List launchable virtual devices (Android AVDs and iOS Simulators)."""
+    return virtual.list_virtual_devices()
+
+
+@mcp.tool()
+def launch_virtual_device(name: str, windowed: bool = False) -> str:
+    """Boot a virtual device by name; it then appears in list_devices once online.
+
+    Boots headless by default (no native emulator/Simulator window) so it is
+    mirrored inside OpenMob; pass windowed=True to also open the platform's window.
+    """
+    result = virtual.launch(name, windowed=windowed)
+    return str(result.get("note", "ok"))
+
+
+@mcp.tool()
+def get_create_options() -> dict:
+    """Installable images and hardware profiles for creating new virtual devices.
+
+    Returns {"android": {device_profiles, system_images}, "ios": {device_types, runtimes}};
+    each section has an `available` flag and a `reason` when the tooling is missing.
+    """
+    return virtual.create_options()
+
+
+@mcp.tool()
+def create_virtual_device(
+    platform: str,
+    name: str,
+    device_profile: str | None = None,
+    system_image: str | None = None,
+    device_type: str | None = None,
+    runtime: str | None = None,
+) -> dict:
+    """Create a new AVD (platform="android") or iOS simulator (platform="ios").
+
+    Android needs device_profile (e.g. "pixel_7") and system_image (e.g.
+    "system-images;android-35;google_apis;arm64-v8a"); an uninstalled image is
+    downloaded first, so a job id is returned — poll GET
+    /virtual-devices/create/jobs/{id} for progress. iOS needs device_type and
+    runtime identifiers (from get_create_options) and completes quickly.
+    """
+    return virtual.create_virtual_device(
+        platform=platform,
+        name=name,
+        device_profile=device_profile,
+        system_image=system_image,
+        device_type=device_type,
+        runtime=runtime,
+    )
 
 
 def run() -> None:

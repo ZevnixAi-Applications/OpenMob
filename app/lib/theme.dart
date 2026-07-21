@@ -12,6 +12,9 @@ abstract final class OM {
   static const Color accent = Color(0xFF3DDC97);
   static const Color danger = Color(0xFFE05B5B);
 
+  /// Sync-input mode affordance (pane borders + broadcast flash).
+  static const Color sync = Color(0xFF5B8DEF);
+
   static ThemeData theme() {
     final base = ThemeData(
       brightness: Brightness.dark,

@@ -1,5 +1,7 @@
 # OpenMob
 
+[![CI](https://github.com/ZevnixAi-Applications/OpenMob/actions/workflows/ci.yml/badge.svg)](https://github.com/ZevnixAi-Applications/OpenMob/actions/workflows/ci.yml)
+
 **Open-source mobile device control for humans and AI agents.**
 
 Control real Android and iOS devices from your Mac — live screen mirror, tap/swipe/type, app install, logs — through a desktop app, a CLI, or an MCP server that lets AI agents (Claude, etc.) drive your phone.

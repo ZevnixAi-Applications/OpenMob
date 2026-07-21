@@ -16,6 +16,8 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
     "pymobiledevice3>=9.36.1",
     "httpx>=0.28.1",
+    "websockets>=13.0",
+    "zeroconf>=0.150.0",
 ]
 
 [project.scripts]

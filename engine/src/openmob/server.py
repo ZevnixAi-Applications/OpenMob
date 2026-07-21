@@ -1,9 +1,15 @@
 """HTTP + WebSocket API server (see docs/API.md)."""
 
 import asyncio
+import contextlib
 import io
+import logging
+import os
 import tempfile
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
+
+import anyio
 
 from fastapi import APIRouter, FastAPI, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
@@ -11,18 +17,35 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from openmob import __version__
+from openmob import __version__, flutter, flutter_run, virtual
+from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, SessionNotFound
 from openmob.device import Device, DeviceError
+from openmob.logstream import LogScope, matches_filter
 from openmob.manager import DeviceManager, DeviceNotFound
+from openmob.virtual import CreateJobNotFound, VirtualDeviceNotFound
 
 HOST = "127.0.0.1"
 PORT = 8930
 
-STREAM_FPS = 8
+STREAM_FPS = 8  # screenshot-poll path (Android/iOS fallback)
+RELAY_MAX_FPS = 15  # cap when relaying a native device stream (iOS MJPEG)
+VIDEO_STREAM_FPS = 20  # relay cap for the H.264 video pipeline (Android)
 JPEG_QUALITY = 70
 
+logger = logging.getLogger(__name__)
+
 manager = DeviceManager()
+debug_manager = DebugSessionManager()
+flutter_manager = flutter_run.FlutterRunManager()
 router = APIRouter(prefix="/api/v1")
+
+# Devices for which the video->poll fallback has already been logged.
+_fallback_logged: set[str] = set()
+
+
+def _android_stream_mode() -> str:
+    """Streaming backend for Android mirrors: "video" (default) or "poll"."""
+    return os.environ.get("OPENMOB_ANDROID_STREAM", "video").strip().lower()
 
 
 class TapBody(BaseModel):
@@ -48,6 +71,40 @@ class KeyBody(BaseModel):
 
 class PackageBody(BaseModel):
     package: str
+
+
+class UrlBody(BaseModel):
+    url: str
+
+
+class PathBody(BaseModel):
+    path: str
+
+
+class PushBody(BaseModel):
+    local_path: str
+    device_path: str
+
+
+class PullBody(BaseModel):
+    device_path: str
+    local_path: str
+
+
+class VirtualDeviceBody(BaseModel):
+    name: str
+    # Headless by default so the device mirrors inside OpenMob; opt in to the
+    # native emulator/Simulator window with windowed=true.
+    windowed: bool = False
+
+
+class CreateVirtualDeviceBody(BaseModel):
+    platform: str
+    name: str
+    device_profile: str | None = None
+    system_image: str | None = None
+    device_type: str | None = None
+    runtime: str | None = None
 
 
 def device_info(device: Device) -> dict[str, str | int]:
@@ -135,27 +192,516 @@ def launch(device_id: str, body: PackageBody) -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.websocket("/devices/{device_id}/stream")
-async def stream(websocket: WebSocket, device_id: str) -> None:
-    """Push binary JPEG frames until the client disconnects."""
+# --- interactive debugger (see docs/DEBUGGING.md) ---------------------------
+
+
+class DebugSessionBody(BaseModel):
+    device_id: str
+    pid: int | None = None
+    bundle_id: str | None = None
+    breakpoints: list[str] = []
+    debugserver_url: str | None = None
+
+
+class BreakpointBody(BaseModel):
+    spec: str
+
+
+class StepBody(BaseModel):
+    kind: str  # in | over | out
+
+
+class EvalBody(BaseModel):
+    expr: str
+    frame_id: int | None = None
+
+
+@router.post("/debug/sessions")
+def debug_create(body: DebugSessionBody) -> dict:
+    session, attach = debug_manager.create(
+        device_id=body.device_id,
+        pid=body.pid,
+        bundle_id=body.bundle_id,
+        breakpoints=body.breakpoints,
+        debugserver_url=body.debugserver_url,
+    )
+    return {**session.info(), "attach": attach}
+
+
+@router.get("/debug/sessions")
+def debug_list() -> list[dict]:
+    return debug_manager.list()
+
+
+@router.get("/debug/sessions/{session_id}/state")
+def debug_state(
+    session_id: str, stack: bool = True, vars: bool = True, threads: bool = False
+) -> dict:
+    return debug_manager.get(session_id).state(stack=stack, variables=vars, threads=threads)
+
+
+@router.post("/debug/sessions/{session_id}/breakpoints")
+def debug_breakpoint_add(session_id: str, body: BreakpointBody) -> dict:
+    return debug_manager.get(session_id).breakpoint_set(body.spec)
+
+
+@router.get("/debug/sessions/{session_id}/breakpoints")
+def debug_breakpoint_list(session_id: str) -> list[dict]:
+    return debug_manager.get(session_id).breakpoint_list()
+
+
+@router.delete("/debug/sessions/{session_id}/breakpoints/{bp_id}")
+def debug_breakpoint_delete(session_id: str, bp_id: int) -> dict:
+    return debug_manager.get(session_id).breakpoint_delete(bp_id)
+
+
+@router.post("/debug/sessions/{session_id}/continue")
+def debug_continue(session_id: str) -> dict:
+    return debug_manager.get(session_id).cont()
+
+
+@router.post("/debug/sessions/{session_id}/pause")
+def debug_pause(session_id: str) -> dict:
+    return debug_manager.get(session_id).pause()
+
+
+@router.post("/debug/sessions/{session_id}/step")
+def debug_step(session_id: str, body: StepBody) -> dict:
+    return debug_manager.get(session_id).step(body.kind)
+
+
+@router.post("/debug/sessions/{session_id}/eval")
+def debug_eval(session_id: str, body: EvalBody) -> dict:
+    return debug_manager.get(session_id).eval(body.expr, body.frame_id)
+
+
+@router.get("/debug/sessions/{session_id}/output")
+def debug_output(session_id: str) -> list[dict]:
+    return debug_manager.get(session_id).output()
+
+
+@router.delete("/debug/sessions/{session_id}")
+def debug_detach(session_id: str, kill: bool = False) -> dict:
+    return debug_manager.remove(session_id, kill=kill)
+
+
+def _log_scope(
+    package: str | None, pid: int | None, scope: str | None, flutter: bool
+) -> LogScope | None:
+    """Build a LogScope from query params, or None for an unscoped whole-device tail.
+
+    `scope=foreground` auto-targets the foreground app (Android). An explicit `pid` or
+    `package` scopes to that app. `flutter` narrows to Flutter output and, on its own,
+    still returns a scope (a Flutter-tagged whole-device tail).
+    """
+    log_scope = LogScope(
+        package=package or None,
+        pid=pid,
+        foreground=scope == "foreground",
+        flutter=flutter,
+    )
+    return log_scope if (log_scope.is_app_scoped or log_scope.flutter) else None
+
+
+@router.get("/devices/{device_id}/logs")
+def get_logs(
+    device_id: str,
+    lines: int = 200,
+    filter: str | None = None,
+    package: str | None = None,
+    pid: int | None = None,
+    scope: str | None = None,
+    flutter: bool = False,
+) -> dict[str, str]:
+    log_scope = _log_scope(package, pid, scope, flutter)
+    return {
+        "logs": manager.get(device_id).logs(lines=lines, filter_str=filter, scope=log_scope)
+    }
+
+
+@router.post("/devices/{device_id}/screenshot/save")
+def save_screenshot(device_id: str, body: PathBody) -> dict[str, str | bool]:
+    png = manager.get(device_id).screenshot()
+    target = Path(body.path)
+    if not target.is_absolute():
+        raise DeviceError(f"path must be absolute: {body.path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(png)
+    return {"ok": True, "path": str(target)}
+
+
+@router.get("/devices/{device_id}/crashes")
+def crash_reports(device_id: str, limit: int = 5) -> list[dict[str, str]]:
+    return manager.get(device_id).crash_reports(limit=limit)
+
+
+@router.post("/devices/{device_id}/open_url")
+def open_url(device_id: str, body: UrlBody) -> dict[str, bool]:
+    manager.get(device_id).open_url(body.url)
+    return {"ok": True}
+
+
+@router.post("/devices/{device_id}/clear_data")
+def clear_app_data(device_id: str, body: PackageBody) -> dict[str, bool]:
+    manager.get(device_id).clear_app_data(body.package)
+    return {"ok": True}
+
+
+@router.post("/devices/{device_id}/force_stop")
+def force_stop(device_id: str, body: PackageBody) -> dict[str, bool]:
+    manager.get(device_id).force_stop(body.package)
+    return {"ok": True}
+
+
+@router.post("/devices/{device_id}/push")
+def push_file(device_id: str, body: PushBody) -> dict[str, bool]:
+    manager.get(device_id).push_file(body.local_path, body.device_path)
+    return {"ok": True}
+
+
+@router.post("/devices/{device_id}/pull")
+def pull_file(device_id: str, body: PullBody) -> dict[str, bool]:
+    manager.get(device_id).pull_file(body.device_path, body.local_path)
+    return {"ok": True}
+
+
+@router.get("/devices/{device_id}/info")
+def system_info(device_id: str) -> dict[str, str | int]:
+    return manager.get(device_id).system_info()
+
+
+class FlutterRunBody(BaseModel):
+    project_path: str
+    mode: str = "debug"
+
+
+@router.get("/devices/{device_id}/flutter/vm-service")
+def flutter_vm_service(device_id: str) -> dict[str, str]:
+    return flutter.vm_service(manager.get(device_id))
+
+
+@router.post("/devices/{device_id}/flutter/run")
+def flutter_run_start(device_id: str, body: FlutterRunBody) -> dict[str, object]:
+    session = flutter_manager.start(manager.get(device_id), body.project_path, body.mode)
+    return session.info()
+
+
+@router.get("/devices/{device_id}/flutter/session")
+def flutter_run_session(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None:
+        return {"running": False, "session": None}
+    return session.info()
+
+
+@router.delete("/devices/{device_id}/flutter/session")
+def flutter_run_stop(device_id: str) -> dict[str, object]:
+    return flutter_manager.stop(device_id)
+
+
+@router.post("/devices/{device_id}/flutter/hot-reload")
+def flutter_hot_reload(device_id: str) -> dict[str, object]:
+    """Hot reload: use the managed run session when present, else fall back to the
+    Dart VM service reloadSources path (only works for externally-started apps)."""
+    session = flutter_manager.get(device_id)
+    if session is not None and session.running:
+        return {"managed": True, **session.reload(full_restart=False)}
+    logger.info(
+        "no managed flutter run session for %s; falling back to VM-service reloadSources",
+        device_id,
+    )
+    return {"managed": False, **flutter.hot_reload(manager.get(device_id))}
+
+
+@router.post("/devices/{device_id}/flutter/hot-restart")
+def flutter_hot_restart(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running:
+        raise DeviceError(
+            "hot restart needs an OpenMob-managed `flutter run` session; "
+            "start one with POST /devices/{id}/flutter/run"
+        )
+    return {"managed": True, **session.reload(full_restart=True)}
+
+
+@router.get("/devices/{device_id}/flutter/devtools")
+def flutter_devtools(device_id: str) -> dict[str, object]:
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running or not session.vm_service_uri:
+        raise DeviceError(
+            "no running flutter run session with a VM service for this device; "
+            "start one with POST /devices/{id}/flutter/run"
+        )
+    return flutter_manager.devtools_url(session)
+
+
+@router.websocket("/devices/{device_id}/flutter/run/logs")
+async def flutter_run_logs(websocket: WebSocket, device_id: str) -> None:
+    """Stream the managed run session's stdout/stderr (build + app logs, reload
+    confirmations), one text message per line, until the client disconnects."""
     await websocket.accept()
+    session = flutter_manager.get(device_id)
+    if session is None:
+        await websocket.close(code=4004, reason="no flutter run session for this device")
+        return
+    stream = session.stream()
+
+    async def pump() -> None:
+        while True:
+            line = await run_in_threadpool(stream.readline)
+            if line is None:
+                return
+            await websocket.send_text(line)
+
+    async def watch_disconnect() -> None:
+        while True:
+            await websocket.receive()
+
+    tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(watch_disconnect())]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            task.exception()
+    finally:
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(stream.close)
+
+
+@router.websocket("/devices/{device_id}/logs/stream")
+async def logs_stream(
+    websocket: WebSocket,
+    device_id: str,
+    filter: str | None = None,
+    package: str | None = None,
+    pid: int | None = None,
+    scope: str | None = None,
+    flutter: bool = False,
+) -> None:
+    """Push log lines (one text message per line) until the client disconnects.
+
+    Optional query params scope the tail to one app: `package=<id>` (Android resolves
+    its live pid and follows restarts), `pid=<n>`, or `scope=foreground`. `flutter=true`
+    narrows to Flutter output. Without any of these, the whole device is tailed.
+    """
+    await websocket.accept()
+    log_scope = _log_scope(package, pid, scope, flutter)
     try:
         device = manager.get(device_id)
+        stream = await run_in_threadpool(device.stream_logs, log_scope)
     except DeviceNotFound:
         await websocket.close(code=4004, reason=f"device {device_id!r} not found")
         return
-    interval = 1 / STREAM_FPS
-    try:
+    except DeviceError as exc:
+        await websocket.close(code=1011, reason=str(exc)[:120])
+        return
+
+    async def pump() -> None:
         while True:
-            started = asyncio.get_running_loop().time()
-            frame = await run_in_threadpool(_capture_jpeg, device)
-            await websocket.send_bytes(frame)
-            elapsed = asyncio.get_running_loop().time() - started
-            await asyncio.sleep(max(0.0, interval - elapsed))
+            line = await run_in_threadpool(stream.readline)
+            if line is None:
+                return
+            if matches_filter(line, filter):
+                await websocket.send_text(line)
+
+    async def watch_disconnect() -> None:
+        while True:  # raises WebSocketDisconnect when the client goes away
+            await websocket.receive()
+
+    tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(watch_disconnect())]
+    try:
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:  # consume expected exceptions (e.g. WebSocketDisconnect)
+            task.exception()
+    finally:
+        # Shielded: cleanup must run even when the endpoint task itself was cancelled
+        # by the client disconnecting.
+        with anyio.CancelScope(shield=True):
+            await run_in_threadpool(stream.close)
+
+
+@router.get("/virtual-devices")
+def list_virtual_devices() -> list[dict[str, str | None]]:
+    return virtual.list_virtual_devices()
+
+
+@router.post("/virtual-devices/launch")
+def launch_virtual_device(body: VirtualDeviceBody) -> dict[str, bool | str]:
+    return virtual.launch(body.name, windowed=body.windowed)
+
+
+@router.get("/virtual-devices/create-options")
+def virtual_create_options() -> dict[str, dict]:
+    return virtual.create_options()
+
+
+@router.post("/virtual-devices/create")
+def create_virtual_device(body: CreateVirtualDeviceBody) -> dict:
+    return virtual.create_virtual_device(
+        platform=body.platform,
+        name=body.name,
+        device_profile=body.device_profile,
+        system_image=body.system_image,
+        device_type=body.device_type,
+        runtime=body.runtime,
+    )
+
+
+@router.get("/virtual-devices/create/jobs/{job_id}")
+def virtual_create_job(job_id: str) -> dict:
+    return virtual.get_create_job(job_id)
+
+
+@router.websocket("/devices/{device_id}/stream")
+async def stream(websocket: WebSocket, device_id: str) -> None:
+    """Push binary JPEG frames until the client disconnects.
+
+    iOS devices are relayed from WDA's MJPEG screen stream; Android devices from a
+    low-latency H.264 (screenrecord->ffmpeg) video pipeline. Either native path falls
+    back to the screenshot-poll loop when its stream is unavailable.
+    """
+    await websocket.accept()
+    try:
+        # Threadpool: discovery is blocking and uses asyncio.run() internally.
+        device = await run_in_threadpool(manager.get, device_id)
+    except DeviceNotFound:
+        await websocket.close(code=4004, reason=f"device {device_id!r} not found")
+        return
+    try:
+        if device.platform == "ios":
+            # iOS exposes an async MJPEG frame iterator; relay it, newest-frame-only.
+            stream_frames = getattr(device, "stream_frames", None)
+            if stream_frames is not None:
+                with contextlib.suppress(DeviceError):  # MJPEG unavailable — poll instead
+                    await relay_latest_frames(stream_frames(), websocket.send_bytes, RELAY_MAX_FPS)
+        elif device.platform == "android" and _android_stream_mode() != "poll":
+            try:
+                await _stream_video(websocket, device)
+                return
+            except DeviceError as exc:
+                if device.id not in _fallback_logged:
+                    _fallback_logged.add(device.id)
+                    logger.warning(
+                        "video stream unavailable for %s (%s); "
+                        "falling back to screencap polling",
+                        device.id,
+                        exc,
+                    )
+        await _stream_poll(websocket, device)
     except (WebSocketDisconnect, ConnectionError):
         pass
     except DeviceError:
-        await websocket.close(code=1011, reason="screenshot failed")
+        await websocket.close(code=1011, reason="stream failed")
+
+
+async def _stream_video(websocket: WebSocket, device: Device) -> None:
+    """Relay frames from the device's screenrecord->ffmpeg pipeline (~20 fps cap).
+
+    screenrecord only encodes when the display updates, and its decoder holds the
+    last frame until the next update arrives. So: prime the client with one
+    screencap frame, and when the pipeline goes stale (keepalive repeat, detected
+    by identity) send a fresh screencap instead of the repeated frame.
+    """
+    frames = device.stream_frames()  # raises DeviceError -> caller falls back to poll
+    interval = 1 / VIDEO_STREAM_FPS
+    loop = asyncio.get_running_loop()
+    previous: bytes | None = None
+    try:
+        try:
+            await websocket.send_bytes(await run_in_threadpool(_capture_jpeg, device))
+        except DeviceError:
+            pass  # priming is best-effort; video frames may still arrive
+        while True:
+            started = loop.time()
+            frame = await run_in_threadpool(next, frames, None)
+            if frame is None:
+                raise DeviceError("video pipeline ended")
+            if frame and frame is not previous:
+                previous = frame
+            else:
+                # Stale tick (keepalive repeat or nothing decoded yet): refresh via
+                # screencap so sparse updates, which sit in the decoder until the
+                # next display change, become visible within ~1 s.
+                try:
+                    frame = await run_in_threadpool(_capture_jpeg, device)
+                except DeviceError:
+                    frame = previous  # keep the last good frame as a keepalive
+            if frame:
+                await websocket.send_bytes(frame)
+            elapsed = loop.time() - started
+            await asyncio.sleep(max(0.0, interval - elapsed))
+    finally:
+        await run_in_threadpool(frames.close)
+
+
+async def _stream_poll(websocket: WebSocket, device: Device) -> None:
+    """Poll screenshots and relay them as JPEG frames (~8 fps)."""
+    interval = 1 / STREAM_FPS
+    loop = asyncio.get_running_loop()
+    while True:
+        started = loop.time()
+        frame = await run_in_threadpool(_capture_jpeg, device)
+        await websocket.send_bytes(frame)
+        elapsed = loop.time() - started
+        await asyncio.sleep(max(0.0, interval - elapsed))
+
+
+async def relay_latest_frames(
+    frames: AsyncIterator[bytes],
+    send: Callable[[bytes], Awaitable[None]],
+    max_fps: float,
+) -> None:
+    """Forward frames to `send`, always the newest one, at most `max_fps` per second.
+
+    The producer is drained continuously into a single latest-frame slot so it never
+    backs up: frames that arrive while the consumer is busy are dropped in favor of
+    the newest (this keeps mirror latency at ~one frame regardless of consumer speed).
+    Returns when the producer ends; re-raises whatever error ended it.
+    """
+    latest: bytes | None = None
+    done = False
+    fresh = asyncio.Event()
+    errors: list[Exception] = []
+
+    async def pump() -> None:
+        nonlocal latest, done
+        try:
+            async for frame in frames:
+                latest = frame
+                fresh.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            done = True
+            fresh.set()
+
+    pump_task = asyncio.create_task(pump())
+    interval = 1 / max_fps
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            if not done:
+                await fresh.wait()
+            fresh.clear()  # before reading the slot, so a newer frame re-wakes us
+            frame, latest = latest, None
+            if frame is not None:
+                started = loop.time()
+                await send(frame)
+                elapsed = loop.time() - started
+                await asyncio.sleep(max(0.0, interval - elapsed))
+            elif done:
+                break
+        if errors:
+            raise errors[0]
+    finally:
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump_task
 
 
 def _capture_jpeg(device: Device) -> bytes:
@@ -173,9 +719,36 @@ def create_app() -> FastAPI:
     async def _not_found(request: Request, exc: DeviceNotFound) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
+    @app.exception_handler(VirtualDeviceNotFound)
+    async def _virtual_not_found(request: Request, exc: VirtualDeviceNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(CreateJobNotFound)
+    async def _create_job_not_found(request: Request, exc: CreateJobNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
     @app.exception_handler(DeviceError)
     async def _device_error(request: Request, exc: DeviceError) -> JSONResponse:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(SessionNotFound)
+    async def _session_not_found(request: Request, exc: SessionNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(CapabilityError)
+    async def _capability_error(request: Request, exc: CapabilityError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "error": "capability_missing",
+                "commands": exc.commands,
+            },
+        )
+
+    @app.exception_handler(DebugError)
+    async def _debug_error(request: Request, exc: DebugError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(NotImplementedError)
     async def _not_implemented(request: Request, exc: NotImplementedError) -> JSONResponse:
@@ -187,8 +760,27 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-def serve(port: int = PORT) -> None:
-    """Run the API server (blocking)."""
+def serve(port: int = PORT, host: str = HOST, mdns: bool = True) -> None:
+    """Run the API server (blocking), advertising it over mDNS unless disabled."""
     import uvicorn
 
-    uvicorn.run(app, host=HOST, port=port, log_level="info")
+    advertiser = None
+    if mdns:
+        from openmob.mdns import MdnsAdvertiser
+
+        advertiser = MdnsAdvertiser(port)
+        try:
+            advertiser.start()
+        except Exception:
+            # Advertising is best-effort; never prevent the API from serving.
+            advertiser = None
+        else:
+            # Unregister during graceful shutdown: uvicorn replays SIGTERM after
+            # run() returns, so cleanup after uvicorn.run would never execute.
+            app.router.on_shutdown.append(advertiser.stop)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        # Fallback for exits that skip the shutdown event; stop() is idempotent.
+        if advertiser is not None:
+            advertiser.stop()

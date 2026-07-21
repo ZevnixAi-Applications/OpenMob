@@ -1,6 +1,6 @@
 """Device manager aggregating all platform backends."""
 
-from openmob import android, ios
+from openmob import android, ios, sim
 from openmob.device import Device
 
 
@@ -19,7 +19,7 @@ class DeviceManager:
 
     def refresh(self) -> list[Device]:
         """Re-scan all backends, keeping cached objects for known ids."""
-        found = [*android.discover(), *ios.discover()]
+        found = [*android.discover(), *ios.discover(), *sim.discover()]
         devices: dict[str, Device] = {}
         for device in found:
             cached = self._devices.get(device.id)

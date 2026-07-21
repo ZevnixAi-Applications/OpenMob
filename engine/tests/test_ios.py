@@ -240,3 +240,49 @@ def test_info_serializes_pixel_geometry() -> None:
         "width": PIXEL_WIDTH,
         "height": PIXEL_HEIGHT,
     }
+
+
+# --- file transfer (push/pull) command construction -------------------------
+
+
+def _capture_pmd3(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Record the argument lists passed to IosDevice._pmd3 without running anything."""
+    calls: list[list[str]] = []
+
+    def fake(self: IosDevice, *args: str, timeout: float = 60) -> str:
+        calls.append(list(args))
+        return ""
+
+    monkeypatch.setattr(IosDevice, "_pmd3", fake)
+    return calls
+
+
+def test_pull_file_afc_passes_ignore_errors(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """`afc pull` must include -i: pymobiledevice3 >= 9 makes --ignore-errors required."""
+    calls = _capture_pmd3(monkeypatch)
+    device = IosDevice("FAKE-UDID", "Fake iPhone")
+    device.pull_file("DCIM/photo.jpg", str(tmp_path / "out.jpg"))
+    assert calls == [["afc", "pull", "-i", "DCIM/photo.jpg", str(tmp_path / "out.jpg")]]
+
+
+def test_pull_file_container_uses_apps_pull(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """A `bundle.id:/path` target reads the app container via house arrest (apps pull)."""
+    calls = _capture_pmd3(monkeypatch)
+    device = IosDevice("FAKE-UDID", "Fake iPhone")
+    device.pull_file("com.example.app:/Documents/f.txt", str(tmp_path / "f.txt"))
+    assert calls == [
+        ["apps", "pull", "com.example.app", "/Documents/f.txt", str(tmp_path / "f.txt")]
+    ]
+
+
+def test_push_file_afc_and_container(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    calls = _capture_pmd3(monkeypatch)
+    local = tmp_path / "in.txt"
+    local.write_text("hi")
+    device = IosDevice("FAKE-UDID", "Fake iPhone")
+    device.push_file(str(local), "DCIM/x.txt")
+    device.push_file(str(local), "com.example.app:/Documents/x.txt")
+    assert calls == [
+        ["afc", "push", str(local), "DCIM/x.txt"],
+        ["apps", "push", "com.example.app", str(local), "/Documents/x.txt"],
+    ]

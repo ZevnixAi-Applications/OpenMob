@@ -8,9 +8,17 @@ app = typer.Typer(help="OpenMob engine: control mobile devices from your machine
 
 
 @app.command()
-def serve(port: int = typer.Option(server.PORT, help="Port to listen on.")) -> None:
+def serve(
+    port: int = typer.Option(server.PORT, help="Port to listen on."),
+    host: str = typer.Option(
+        server.HOST, help="Interface to bind (use 0.0.0.0 to allow LAN clients)."
+    ),
+    mdns: bool = typer.Option(
+        True, "--mdns/--no-mdns", help="Advertise the engine via mDNS (_openmob._tcp)."
+    ),
+) -> None:
     """Start the HTTP/WebSocket API server."""
-    server.serve(port=port)
+    server.serve(port=port, host=host, mdns=mdns)
 
 
 @app.command()

@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 
+from openmob.logstream import LogScope, LogStream
+
 
 class DeviceError(Exception):
     """Raised when a device command fails."""
@@ -77,8 +79,52 @@ class Device(ABC):
         """Launch an app by package/bundle identifier."""
 
     @abstractmethod
-    def logs(self) -> str:
-        """Return recent device logs."""
+    def logs(
+        self,
+        lines: int = 200,
+        filter_str: str | None = None,
+        scope: LogScope | None = None,
+    ) -> str:
+        """Return recent logs, filtered to lines containing `filter_str`.
+
+        When `scope` targets a single app, the tail is restricted to that app's
+        process(es); an app that is not running yields an empty result.
+        """
+
+    @abstractmethod
+    def stream_logs(self, scope: LogScope | None = None) -> LogStream:
+        """Start a live log tail; caller must close() the returned stream.
+
+        When `scope` targets a single app, only that app's log output is streamed.
+        """
+
+    @abstractmethod
+    def crash_reports(self, limit: int = 5) -> list[dict[str, str]]:
+        """Return the most recent app crash reports, newest first."""
+
+    @abstractmethod
+    def open_url(self, url: str) -> None:
+        """Open a URL / deep link on the device."""
+
+    @abstractmethod
+    def clear_app_data(self, package: str) -> None:
+        """Clear an app's data and cache."""
+
+    @abstractmethod
+    def force_stop(self, package: str) -> None:
+        """Force-stop a running app."""
+
+    @abstractmethod
+    def push_file(self, local_path: str, device_path: str) -> None:
+        """Copy a file from the engine host to the device."""
+
+    @abstractmethod
+    def pull_file(self, device_path: str, local_path: str) -> None:
+        """Copy a file from the device to the engine host."""
+
+    @abstractmethod
+    def system_info(self) -> dict[str, str | int]:
+        """Return battery level, OS version, and model details."""
 
     def info(self) -> dict[str, str | int]:
         """Serializable summary used by the REST and MCP layers."""
