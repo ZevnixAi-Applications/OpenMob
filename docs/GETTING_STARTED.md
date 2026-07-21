@@ -7,6 +7,7 @@ through the desktop app and CLI, or as an AI agent through MCP.
 - [Install the engine](#install-the-engine)
 - [Your first Android device](#your-first-android-device)
 - [Your first iOS device](#your-first-ios-device)
+- [Windows (Android only)](#windows-android-only)
 - [Run the desktop app](#run-the-desktop-app)
 - [Use the CLI](#use-the-cli)
 - [Wire up the MCP server](#wire-up-the-mcp-server)
@@ -14,15 +15,17 @@ through the desktop app and CLI, or as an AI agent through MCP.
 
 ## Prerequisites
 
-OpenMob runs on **macOS**.
+OpenMob runs on **macOS** and **Windows 10/11 (x64)**. On Windows it's an
+**Android + emulator** device lab — iOS control is macOS-only everywhere (see the
+[Windows](#windows-android-only) section below).
 
 | Tool | Needed for | Notes |
 |---|---|---|
-| [uv](https://docs.astral.sh/uv/) | The engine (required) | Installs Python 3.12 automatically. `brew install uv`. |
-| `adb` (Android SDK platform-tools) | Android devices/emulators | `brew install --cask android-platform-tools`, or the Android SDK. |
-| [Flutter](https://docs.flutter.dev/get-started/install) (stable) | The desktop app; Flutter run-mode | Optional if you only use the engine + MCP. |
-| Xcode | iOS devices, simulators, the macOS app build | From the App Store. Simulators and the iOS lldb debugger need it. |
-| `ffmpeg` | Android low-latency video mirror | `brew install ffmpeg`. Without it, Android falls back to screenshot polling. |
+| [uv](https://docs.astral.sh/uv/) | The engine (required) | Installs Python 3.12 automatically. macOS: `brew install uv`; Windows: `winget install astral-sh.uv` or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`. |
+| `adb` (Android SDK platform-tools) | Android devices/emulators | macOS: `brew install --cask android-platform-tools`; Windows: install via Android Studio's SDK Manager or the standalone platform-tools zip, then add it to `PATH` (or set `ANDROID_HOME`). |
+| [Flutter](https://docs.flutter.dev/get-started/install) (stable) | The desktop app; Flutter run-mode | Optional if you only use the engine + MCP. On Windows it also needs Visual Studio with the "Desktop development with C++" workload to build the app. |
+| Xcode | iOS devices, simulators, the macOS app build | macOS only. From the App Store. Simulators and the iOS lldb debugger need it. |
+| `ffmpeg` | Android low-latency video mirror | macOS: `brew install ffmpeg`; Windows: `choco install ffmpeg` (or add an ffmpeg build to `PATH`). Without it, Android falls back to screenshot polling. |
 
 You only need the tools for the platforms you actually use. The engine runs with
 just `uv`; adb-less machines simply won't see Android devices, and so on.
@@ -97,17 +100,49 @@ in **[IOS.md](IOS.md)**; the short version:
 Read [IOS.md](IOS.md) before your first physical-device run — provisioning and
 Developer Mode are the usual snags.
 
+## Windows (Android only)
+
+On Windows, OpenMob controls **Android devices and emulators** — everything in
+[Your first Android device](#your-first-android-device) applies. iOS is
+unavailable on Windows (WebDriverAgent needs Xcode to build and sign, and
+`xcrun`/`simctl`/lldb are macOS tools); iOS devices and simulators simply won't
+appear, and any iOS-specific call returns a clear "requires macOS" error.
+
+1. **Install the app.** Download `OpenMob-<version>-windows-setup.exe` from the
+   [Releases](https://github.com/ZevnixAi-Applications/OpenMob/releases/latest)
+   page and run it (installs to Program Files with a Start Menu shortcut).
+2. **Install adb.** Get the Android SDK platform-tools (via Android Studio's SDK
+   Manager, or the standalone platform-tools zip) and add its folder to `PATH`,
+   or set `ANDROID_HOME` to the SDK root. The engine also finds adb at
+   `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` automatically.
+3. **Install uv and run the engine** in PowerShell:
+
+   ```powershell
+   winget install astral-sh.uv          # or the install.ps1 one-liner
+   git clone https://github.com/ZevnixAi-Applications/OpenMob.git
+   cd OpenMob\engine
+   uv run openmob serve                 # HTTP/WebSocket API on 127.0.0.1:8930
+   ```
+
+4. **Connect an Android device** (USB debugging on) or boot an emulator, then open
+   the OpenMob app. Unlike macOS, the app has no "Start engine" button on Windows —
+   start `openmob serve` yourself as above, then point the app at it (it defaults
+   to `127.0.0.1:8930` and can also discover engines over mDNS).
+
+Optionally install `ffmpeg` (`choco install ffmpeg`) for the low-latency Android
+video mirror; without it the mirror falls back to screenshot polling.
+
 ## Run the desktop app
 
 ```sh
 cd app
 flutter pub get
-flutter run -d macos
+flutter run -d macos       # macOS; on Windows use: flutter run -d windows
 ```
 
 The app connects to the engine at `http://127.0.0.1:8930` by default. It can also
 **discover engines on your network** (the sidebar's engine-settings dialog) via
-mDNS, which is handy when the engine runs on a different Mac.
+mDNS, which is handy when the engine runs on a different machine.
 
 In the app you can:
 
@@ -181,7 +216,7 @@ Restart the client, then ask the agent to *list devices*, *take a screenshot*,
 | Symptom | Fix |
 |---|---|
 | `openmob devices` shows nothing (Android) | `adb devices` first — approve the USB-debugging prompt on the phone; try a different cable/port; `adb kill-server && adb start-server`. |
-| Android screen mirror is black or laggy | Install `ffmpeg` (`brew install ffmpeg`) for the H.264 pipeline; without it OpenMob falls back to ~8 fps screenshot polling. Force polling with `OPENMOB_ANDROID_STREAM=poll`. |
+| Android screen mirror is black or laggy | Install `ffmpeg` (macOS `brew install ffmpeg`, Windows `choco install ffmpeg`) for the H.264 pipeline; without it OpenMob falls back to ~8 fps screenshot polling. Force polling with `OPENMOB_ANDROID_STREAM=poll`. |
 | iPhone not listed | Confirm `xcrun devicectl list devices` shows **connected** (not just "paired"), Developer Mode is on, and the Mac is trusted. See [IOS.md](IOS.md). |
 | iOS taps do nothing / screen won't mirror | WDA isn't running or its ports aren't forwarded. Re-run the `usbmux forward` commands and `curl http://127.0.0.1:8100/status`. |
 | iOS simulator's first tap hangs for a while | Expected — OpenMob builds and starts WDA for the simulator on first input. Later taps are fast. |

@@ -1,12 +1,13 @@
 # OpenMob
 
-Your phones, on your Mac — for you and your AI. Mirror, tap, type, install,
+Your phones, on your desktop — for you and your AI. Mirror, tap, type, install,
 log, and debug real Android and iOS devices from one window, over USB or Wi-Fi.
+Runs on **macOS and Windows** (Android + emulators everywhere; iOS is macOS-only).
 
 ![OpenMob desktop app](docs/img/hero.png)
 
 OpenMob is an open-source device lab. It puts every phone, emulator, and
-simulator you own into a single Mac app — with a live screen you can click, app
+simulator you own into a single desktop app — with a live screen you can click, app
 logs scoped to *your* app, Flutter hot reload, and a built-in debugger. And
 because it speaks [MCP](https://modelcontextprotocol.io), an AI agent like Claude
 can drive those same devices for you: "open my app, tap through checkout, and
@@ -38,12 +39,19 @@ tell me what the logs say."
 
 ## Install
 
-**1. Get the app.** Download the latest `OpenMob-macOS.dmg` from the
+**1. Get the app.** From the
 [Releases](https://github.com/ZevnixAi-Applications/OpenMob/releases/latest)
-page, open it, and drag **OpenMob** into **Applications**.
+page, download the installer for your OS:
 
-> The app is signed with a Developer ID. Until it's notarized, the first launch
-> needs a right-click → **Open** to get past Gatekeeper. Requires **macOS 13+**.
+- **macOS** — `OpenMob-<version>-macos.dmg`; open it and drag **OpenMob** into
+  **Applications**.
+- **Windows** — `OpenMob-<version>-windows-setup.exe`; run it to install to
+  Program Files with a Start Menu shortcut. Windows controls **Android devices
+  and emulators** (iOS needs macOS).
+
+> On macOS the app is signed with a Developer ID; until it's notarized, the first
+> launch needs a right-click → **Open** to get past Gatekeeper. Requires
+> **macOS 13+**. On Windows, requires **Windows 10/11 (x64)**.
 
 **2. Run the engine.** The app talks to a small local engine that does the
 actual device control. With [uv](https://docs.astral.sh/uv/) installed:
@@ -131,18 +139,32 @@ full picture.
 | Interactive lldb debugger | — | ✅ simulator · ⚙️ device (needs a tunnel) |
 | Create / launch virtual devices | ✅ AVDs | ✅ Simulators |
 
-The engine runs on macOS. iOS control requires Xcode and the one-time WDA runner
-setup; real-device iOS debugging needs a developer tunnel (the app tells you the
-exact command).
+### Host OS
+
+| Host | Android (devices + emulators) | iOS (devices + simulators) |
+| --- | --- | --- |
+| **macOS** | ✅ | ✅ |
+| **Windows** | ✅ | ⛔ requires macOS |
+
+The engine and app run on both macOS and Windows. **Android** works fully on
+either — `adb` is cross-platform, AVDs boot, and the fast video stream works when
+`ffmpeg` is on `PATH`. **iOS** is macOS-only everywhere: it needs Xcode to build
+and sign WebDriverAgent, and `xcrun`/`simctl`/lldb are macOS tools. On Windows,
+iOS devices and simulators simply don't appear, and any iOS-specific call returns
+a clear "requires macOS" error rather than failing. iOS control also requires the
+one-time WDA runner setup; real-device iOS debugging needs a developer tunnel
+(the app tells you the exact command).
 
 ---
 
 ## Build from source
 
-Requirements: **macOS 13+**, [uv](https://docs.astral.sh/uv/),
-[Flutter](https://flutter.dev) (for the app), the Android SDK/`adb`, and Xcode
-(for iOS). `ffmpeg` (`brew install ffmpeg`) enables the fast Android video
-stream.
+Requirements: **macOS 13+** or **Windows 10/11 (x64)**,
+[uv](https://docs.astral.sh/uv/), [Flutter](https://flutter.dev) (for the app),
+and the Android SDK/`adb`. Xcode is needed for iOS (macOS only). `ffmpeg` on
+`PATH` (macOS: `brew install ffmpeg`; Windows: `choco install ffmpeg`) enables the
+fast Android video stream. On Windows, build the app with `flutter build windows`
+and run the app with `flutter run -d windows`.
 
 ```sh
 git clone https://github.com/ZevnixAi-Applications/OpenMob.git
