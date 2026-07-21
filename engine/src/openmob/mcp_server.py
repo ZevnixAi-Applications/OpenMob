@@ -2,6 +2,7 @@
 
 from mcp.server.fastmcp import FastMCP, Image
 
+from openmob import virtual
 from openmob.manager import DeviceManager
 
 manager = DeviceManager()
@@ -80,6 +81,19 @@ def launch_app(device_id: str, package: str) -> str:
     """Launch an app by package identifier."""
     manager.get(device_id).launch_app(package)
     return "ok"
+
+
+@mcp.tool()
+def list_virtual_devices() -> list[dict[str, str | None]]:
+    """List launchable virtual devices (Android AVDs and iOS Simulators)."""
+    return virtual.list_virtual_devices()
+
+
+@mcp.tool()
+def launch_virtual_device(name: str) -> str:
+    """Boot a virtual device by name; it then appears in list_devices once online."""
+    result = virtual.launch(name)
+    return str(result.get("note", "ok"))
 
 
 def run() -> None:
