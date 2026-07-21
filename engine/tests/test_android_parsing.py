@@ -2,7 +2,7 @@
 
 import pytest
 
-from openmob.android import escape_text, parse_devices, parse_wm_size
+from openmob.android import escape_text, parse_devices, parse_launcher_labels, parse_wm_size
 from openmob.device import DeviceError
 
 DEVICES_OUTPUT = """\
@@ -51,3 +51,68 @@ def test_escape_text_specials() -> None:
 
 def test_escape_text_plain() -> None:
     assert escape_text("plain-text_123") == "plain-text_123"
+
+
+# Trimmed from real `adb shell cmd package query-activities -a android.intent.action.MAIN
+# -c android.intent.category.LAUNCHER` output (Android 16 emulator).
+QUERY_ACTIVITIES_OUTPUT = """\
+  Activity Resolver Table:
+      ActivityInfo:
+        name=lawgenie.com.MainActivity
+        packageName=lawgenie.com
+        labelRes=0x0 nonLocalizedLabel=NyayX icon=0x7f0c0001 banner=0x0
+        ApplicationInfo:
+          name=android.app.Application
+          packageName=lawgenie.com
+          labelRes=0x0 nonLocalizedLabel=NyayX icon=0x7f0c0001 banner=0x0
+      ActivityInfo:
+        name=com.android.chrome/.Main
+        packageName=com.android.chrome
+        labelRes=0x7f140350 nonLocalizedLabel=null icon=0x7f090378 banner=0x0
+      ActivityInfo:
+        name=com.example.spaces.MainActivity
+        packageName=com.example.spaces
+        labelRes=0x0 nonLocalizedLabel=My Cool App icon=0x0 banner=0x0
+"""
+
+
+def test_parse_launcher_labels() -> None:
+    labels = parse_launcher_labels(QUERY_ACTIVITIES_OUTPUT)
+    assert labels == {
+        "lawgenie.com": "NyayX",
+        "com.example.spaces": "My Cool App",
+    }
+
+
+def test_parse_launcher_labels_skips_null() -> None:
+    labels = parse_launcher_labels(QUERY_ACTIVITIES_OUTPUT)
+    assert "com.android.chrome" not in labels
+
+
+def test_parse_launcher_labels_first_non_null_wins() -> None:
+    output = """\
+      ActivityInfo:
+        packageName=com.example.app
+        labelRes=0x0 nonLocalizedLabel=Activity Label icon=0x0 banner=0x0
+        ApplicationInfo:
+          packageName=com.example.app
+          labelRes=0x0 nonLocalizedLabel=App Label icon=0x0 banner=0x0
+    """
+    assert parse_launcher_labels(output) == {"com.example.app": "Activity Label"}
+
+
+def test_parse_launcher_labels_activity_null_application_set() -> None:
+    output = """\
+      ActivityInfo:
+        packageName=com.example.app
+        labelRes=0x7f0f0019 nonLocalizedLabel=null icon=0x0 banner=0x0
+        ApplicationInfo:
+          packageName=com.example.app
+          labelRes=0x0 nonLocalizedLabel=App Label icon=0x7f0d0001 banner=0x0
+    """
+    assert parse_launcher_labels(output) == {"com.example.app": "App Label"}
+
+
+def test_parse_launcher_labels_empty() -> None:
+    assert parse_launcher_labels("") == {}
+    assert parse_launcher_labels("no labels here\n") == {}
