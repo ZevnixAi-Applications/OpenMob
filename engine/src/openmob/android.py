@@ -165,11 +165,19 @@ class AndroidDevice(Device):
         return [{"package": package, "name": package} for package in packages]
 
     def launch_app(self, package: str) -> None:
+        # `monkey`-based launching aborts silently on recent Android (API 37+),
+        # so resolve the launcher activity explicitly and start it with `am`.
         output = self._shell(
-            "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"
+            "cmd", "package", "resolve-activity", "--brief",
+            "-c", "android.intent.category.LAUNCHER", package,
         )
-        if "No activities found" in output or "monkey aborted" in output:
-            raise DeviceError(f"could not launch {package!r}")
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        activity = lines[-1] if lines else ""
+        if "/" not in activity:
+            raise DeviceError(f"could not launch {package!r}: no launcher activity found")
+        started = self._shell("am", "start", "-n", activity)
+        if "Error" in started or "Exception" in started:
+            raise DeviceError(f"could not launch {package!r}: {started.strip()}")
 
     def logs(self) -> str:
         return self._shell("logcat", "-d", "-t", "500", timeout=60)
