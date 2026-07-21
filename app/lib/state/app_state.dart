@@ -117,6 +117,13 @@ class AppState extends ChangeNotifier {
     }
     _pollTimer = Timer.periodic(_pollInterval, (_) => refresh());
     await refresh();
+    // First run with no restored tabs: auto-open the first online device so the
+    // mirror, logs panel and toolbar are visible immediately instead of a blank
+    // "click a device" screen.
+    if (openDeviceIds.isEmpty) {
+      final online = devices.where((d) => d.status == 'online');
+      if (online.isNotEmpty) openDevice(online.first.id);
+    }
   }
 
   /// Persists the "Start engine" command; empty input restores the default.

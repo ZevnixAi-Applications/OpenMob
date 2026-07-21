@@ -306,14 +306,19 @@ class AndroidDevice(Device):
         return self._app_labels
 
     def launch_app(self, package: str) -> None:
-        output = self._shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
-        if "Events injected: 1" in output:
-            return
-        if "No activities found" in output:
-            raise DeviceError(f"could not launch {package!r}: no launchable activity")
-        # monkey aborts on some system images (e.g. "SYS_KEYS has no physical keys",
-        # exit 251 on 16KB-page emulator images). Fall back to resolving the launcher
-        # activity and starting it directly.
+        try:
+            output = self._shell(
+                "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"
+            )
+            if "Events injected: 1" in output:
+                return
+            if "No activities found" in output:
+                raise DeviceError(f"could not launch {package!r}: no launchable activity")
+        except DeviceError:
+            # monkey aborts on some system images (e.g. "SYS_KEYS has no physical
+            # keys", exit 251 on 16KB-page emulator images). Fall through to
+            # resolving the launcher activity and starting it directly.
+            pass
         component = self._resolve_launcher(package)
         if component is None:
             raise DeviceError(f"could not launch {package!r}")
