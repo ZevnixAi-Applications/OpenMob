@@ -39,13 +39,22 @@ else
     git clone --depth 1 "${WDA_REPO_URL}" "${WDA_DIR}"
 fi
 
-# --- Rebrand runner as OpenMob Runner (BSD license kept in THIRD_PARTY_LICENSES.md) ---
+# --- Rebrand runner UI as OpenMob Runner ------------------------------------
+# Display layer ONLY: app icon + CFBundleDisplayName. Never change CFBundleName
+# or class/bundle structure — that breaks XCTest bundle loading. Upstream
+# attribution stays in THIRD_PARTY_LICENSES.md (BSD-3-Clause). Idempotent.
+
+BRANDING_DIR="${ROOT_DIR}/runner/ios/branding"
+ICON_DEST="${WDA_DIR}/WebDriverAgentRunner/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
+if [[ -f "${BRANDING_DIR}/icon-1024.png" && -f "${ICON_DEST}" ]]; then
+    cp "${BRANDING_DIR}/icon-1024.png" "${ICON_DEST}"
+    log "OpenMob app icon copied into the runner asset catalog."
+fi
 
 RUNNER_PLIST="${WDA_DIR}/WebDriverAgentRunner/Info.plist"
 if [[ -f "${RUNNER_PLIST}" ]]; then
     /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OpenMob Runner'" "${RUNNER_PLIST}" 2>/dev/null \
         || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OpenMob Runner'" "${RUNNER_PLIST}"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleName 'OpenMob Runner'" "${RUNNER_PLIST}" 2>/dev/null || true
     log "Runner display name set to 'OpenMob Runner'."
 fi
 
