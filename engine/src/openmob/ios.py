@@ -489,7 +489,9 @@ class IosDevice(Device):
         if bundle:
             self._pmd3("apps", "pull", bundle, container_path, local_path, timeout=300)
         else:
-            self._pmd3("afc", "pull", device_path, local_path, timeout=300)
+            # `afc pull` requires -i/--ignore-errors (pymobiledevice3 >= 9.x); it is a
+            # best-effort flag for recursive pulls but is mandatory even for one file.
+            self._pmd3("afc", "pull", "-i", device_path, local_path, timeout=300)
 
     def system_info(self) -> dict[str, str | int]:
         async def fetch() -> dict[str, str | int]:

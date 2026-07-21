@@ -24,7 +24,7 @@ Session model:
 - `state` responses are depth-limited (20 frames, 30 locals, 10 children, 2 levels)
   so they stay LLM-friendly.
 
-## Simulator (fully supported)
+## Simulator (✅ verified-live, fully supported)
 
 Simulator apps are ordinary macOS processes, so lldb attaches directly — **no tunnel,
 no sudo, no pairing**. `device_id` is the simulator UDID (must be Booted).
@@ -61,31 +61,71 @@ Via MCP the same flow is `debug_attach` → `debug_state` → `debug_eval` →
 `debug_step` → `debug_detach`, addressed by `device_id` instead of a session id.
 `scripts/e2e_debug_test.sh` runs this end-to-end through `claude -p`.
 
-## Real devices (iOS 17+): gated behind a capability check
+## Real devices (iOS 17+): ⚙️ works-with-setup, with a known blocker
 
-Debugging a physical iPhone requires plumbing that OpenMob cannot set up by itself:
+**Status (verified 2026-07-21 on a real iPhone, UDID `00008101-…`, iOS 26.5.2,
+pymobiledevice3 9.36.1):**
 
-1. **A usermode tunnel** (needs root):
+- ✅ **The no-sudo tunnel transport works.** A pure-Python userspace tunnel forwarded
+  to a local port lets the engine's lldb worker reach an on-device debugserver over
+  gdb-remote — no root, no `tunneld`. Verified: `ConnectRemote` reaches the device and
+  returns a live gdb-remote connection.
+- ⛔ **Attaching to a *running* app for a backtrace is NOT yet possible from the
+  engine.** pymobiledevice3's `debugserver start-server` starts an *unattached*
+  debugserver (it is launch-oriented). `process connect` to it yields a connection
+  with **no process** — the engine's connect returns `pid 0`, state `connected`, and
+  there is nothing to break in or backtrace. Getting a stopped, debuggable process
+  requires a debugserver that is already *attached* to (or *launching*) the target,
+  which the current CLI does not expose in a form the engine consumes. This blocker is
+  independent of sudo — a root `tunneld` + `start-server` hits the same wall.
 
-   ```bash
-   sudo pymobiledevice3 remote tunneld
-   ```
+So real-device lldb is honestly: **transport verified, attach not wired end-to-end.**
+The simulator path (above) is the fully verified, recommended target.
 
-2. **A debugserver** on the device (via the tunnel):
+### No-sudo tunnel runbook (verified to the "connected" step)
 
-   ```bash
-   pymobiledevice3 developer debugserver start-server
-   ```
+Run **one** command; it establishes the userspace tunnel and starts + forwards a
+debugserver, no root required:
 
-   Pass the `connect://[host]:port` URL it prints as `debugserver_url` when creating
-   the session.
+```bash
+pymobiledevice3 developer debugserver start-server --userspace --local-port 10011
+#   ...prints:  (lldb) process connect connect://[127.0.0.1]:10011
+```
 
-When any prerequisite is missing, session creation fails with a structured error —
-HTTP 409 `{"error":"capability_missing","commands":[...]}` (REST) or the same shape
-from `debug_attach` (MCP) — listing exactly the commands above. With both in place
-the engine connects lldb to the remote debugserver over the gdb-remote protocol.
-The real-device path is unit-tested against mocks; the simulator path is verified
-live and is the recommended target.
+Then create a session, passing that URL as `debugserver_url`:
+
+```bash
+curl -X POST http://127.0.0.1:8930/api/v1/debug/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"device_id":"<UDID>","bundle_id":"<bundle>",
+       "debugserver_url":"connect://[127.0.0.1]:10011"}'
+```
+
+The engine trusts a supplied `debugserver_url` and connects lldb to it (no `tunneld`
+probe). Observed today: the session is *created* (`pid 0`), but because the
+`start-server` debugserver has no process attached, its state immediately reads
+`exited` — `pause`/`state` report no running process and no backtrace is possible
+(see the ⛔ blocker above).
+
+### Root tunnel alternative
+
+The kernel-routable tunnel needed by tools that drive an *external* lldb (e.g.
+`pymobiledevice3 developer debugserver lldb`, which refuses the userspace tunnel):
+
+```bash
+sudo pymobiledevice3 remote tunneld           # one-time, needs root
+pymobiledevice3 developer debugserver start-server --tunnel <UDID>
+```
+
+This still produces an *unattached* `start-server`, so it does not lift the ⛔ blocker
+for the engine's attach flow; it only unblocks external-lldb tooling.
+
+### Capability error
+
+When no `debugserver_url` is supplied for a real device, session creation fails with a
+structured error — HTTP 409 `{"error":"capability_missing","commands":[...]}` (REST) or
+the same shape from `debug_attach` (MCP) — whose `commands` now include the no-sudo
+userspace command above as well as the root-tunnel alternative.
 
 ## Notes and limits
 
