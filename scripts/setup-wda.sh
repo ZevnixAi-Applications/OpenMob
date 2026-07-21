@@ -45,17 +45,22 @@ fi
 # attribution stays in THIRD_PARTY_LICENSES.md (BSD-3-Clause). Idempotent.
 
 BRANDING_DIR="${ROOT_DIR}/runner/ios/branding"
-ICON_DEST="${WDA_DIR}/WebDriverAgentRunner/Assets.xcassets/AppIcon.appiconset/icon-1024.png"
-if [[ -f "${BRANDING_DIR}/icon-1024.png" && -f "${ICON_DEST}" ]]; then
-    cp "${BRANDING_DIR}/icon-1024.png" "${ICON_DEST}"
+RUNNER_XCASSETS="${WDA_DIR}/WebDriverAgentRunner/Assets.xcassets"
+if [[ -f "${BRANDING_DIR}/icon-1024.png" && -f "${RUNNER_XCASSETS}/AppIcon.appiconset/icon-1024.png" ]]; then
+    cp "${BRANDING_DIR}/icon-1024.png" "${RUNNER_XCASSETS}/AppIcon.appiconset/icon-1024.png"
     log "OpenMob app icon copied into the runner asset catalog."
+fi
+# Launch-screen assets (branded idle screen shown when the app is opened by hand)
+if [[ -d "${BRANDING_DIR}/LaunchImage.imageset" && -d "${RUNNER_XCASSETS}" ]]; then
+    cp -R "${BRANDING_DIR}/LaunchImage.imageset" "${BRANDING_DIR}/LaunchBackground.colorset" "${RUNNER_XCASSETS}/"
+    log "OpenMob launch-screen assets copied into the runner asset catalog."
 fi
 
 RUNNER_PLIST="${WDA_DIR}/WebDriverAgentRunner/Info.plist"
 if [[ -f "${RUNNER_PLIST}" ]]; then
-    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OpenMob Runner'" "${RUNNER_PLIST}" 2>/dev/null \
-        || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OpenMob Runner'" "${RUNNER_PLIST}"
-    log "Runner display name set to 'OpenMob Runner'."
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OM Runner'" "${RUNNER_PLIST}" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OM Runner'" "${RUNNER_PLIST}"
+    log "Runner display name set to 'OM Runner'."
 fi
 
 # --- Resolve device UDID ---------------------------------------------------
@@ -97,12 +102,18 @@ RUNNER_APP="${DERIVED_DATA}/Build/Products/Debug-iphoneos/WebDriverAgentRunner-R
 # --- Rebrand the BUILT bundle (Xcode generates the runner's Info.plist,   --
 # --- ignoring the source plist) and re-sign it                            --
 
-/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OpenMob Runner'" "${RUNNER_APP}/Info.plist" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OpenMob Runner'" "${RUNNER_APP}/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 'OM Runner'" "${RUNNER_APP}/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 'OM Runner'" "${RUNNER_APP}/Info.plist"
+# Branded launch screen (idle screen when the app is opened by hand); assets are
+# compiled into Assets.car from the catalog copies made before the build.
+/usr/libexec/PlistBuddy -c "Delete :UILaunchScreen" "${RUNNER_APP}/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UILaunchScreen dict" "${RUNNER_APP}/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :UILaunchScreen:UIColorName string LaunchBackground" "${RUNNER_APP}/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :UILaunchScreen:UIImageName string LaunchImage" "${RUNNER_APP}/Info.plist"
 SIGN_ID="$(security find-identity -v -p codesigning | grep -m1 'Apple Development' | awk '{print $2}')"
 [[ -n "${SIGN_ID}" ]] || die "No 'Apple Development' signing identity found in keychain."
 codesign -f --preserve-metadata=identifier,entitlements,flags -s "${SIGN_ID}" "${RUNNER_APP}"
-log "Runner rebranded to 'OpenMob Runner' and re-signed."
+log "Runner rebranded to 'OM Runner' (display name + launch screen) and re-signed."
 
 # --- Install onto the phone ------------------------------------------------
 
