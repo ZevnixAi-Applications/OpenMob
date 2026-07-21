@@ -1,0 +1,120 @@
+name: Release installers
+
+# Builds the OpenMob desktop installers on their native runners and, for a
+# published GitHub Release, attaches them as release assets. Manual runs
+# (workflow_dispatch) still build and upload the artifacts to the run so you can
+# smoke-test packaging without cutting a release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to upload assets onto the release
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${{ github.event.release.tag_name }}"
+          else
+            version="$(grep '^version:' app/pubspec.yaml | head -1 | sed 's/version:[[:space:]]*//; s/+.*//')"
+          fi
+          version="${version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Windows release
+        working-directory: app
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+          flutter build windows --release
+
+      - name: Package installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe not found at $iscc"
+          }
+          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "installer\windows\openmob.iss"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenMob-windows-setup
+          path: installer/windows/Output/*.exe
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: installer/windows/Output/*.exe
+
+  macos:
+    name: macOS DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            version="${{ github.event.release.tag_name }}"
+          else
+            version="$(grep '^version:' app/pubspec.yaml | head -1 | sed 's/version:[[:space:]]*//; s/+.*//')"
+          fi
+          version="${version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS release
+        working-directory: app
+        run: |
+          flutter config --enable-macos-desktop
+          flutter pub get
+          flutter build macos --release
+
+      - name: Package DMG
+        shell: bash
+        run: |
+          app_bundle="$(find app/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' | head -1)"
+          if [ -z "$app_bundle" ]; then
+            echo "no .app bundle produced by flutter build macos" >&2
+            exit 1
+          fi
+          dmg="OpenMob-${{ steps.ver.outputs.version }}-macos.dmg"
+          hdiutil create -volname "OpenMob" -srcfolder "$app_bundle" -ov -format UDZO "$dmg"
+          echo "dmg=$dmg" >> "$GITHUB_ENV"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenMob-macos-dmg
+          path: ${{ env.dmg }}
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: ${{ env.dmg }}
