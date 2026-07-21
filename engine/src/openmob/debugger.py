@@ -23,6 +23,8 @@ from collections import deque
 
 import httpx
 
+from openmob.osinfo import is_macos
+
 IDLE_TIMEOUT = 600.0  # seconds without a request before a session is reaped
 DEFAULT_TIMEOUT = 20.0
 ATTACH_TIMEOUT = 45.0
@@ -355,6 +357,8 @@ class DebugSessionManager:
     ) -> tuple[DebugSession, dict]:
         """Attach and return (session, attach state). One session per device."""
         self.reap_idle()
+        if not is_macos():
+            raise DebugError("iOS debugging requires macOS (Xcode + lldb)")
         if pid is None and not bundle_id:
             raise DebugError("either pid or bundle_id is required")
         with self._lock:

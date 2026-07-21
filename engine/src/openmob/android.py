@@ -10,6 +10,7 @@ from pathlib import Path
 from openmob import videostream
 from openmob.device import Device, DeviceError
 from openmob.logstream import LogScope, LogStream, ScopedLogStream, apply_filter
+from openmob.osinfo import exe_name, is_windows
 
 KEYCODES: dict[str, int] = {
     "home": 3,
@@ -26,11 +27,17 @@ _SHELL_SPECIALS = set("\\\"'`$&|;<>()*?~#[]{}!")
 
 @cache
 def find_adb() -> str:
-    """Locate the adb binary, preferring the Android SDK install."""
+    """Locate the adb binary, preferring the Android SDK install (cross-platform)."""
+    adb = exe_name("adb")
     candidates = []
-    if android_home := os.environ.get("ANDROID_HOME"):
-        candidates.append(Path(android_home) / "platform-tools" / "adb")
-    candidates.append(Path.home() / "Library/Android/sdk/platform-tools/adb")
+    for env in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if root := os.environ.get(env):
+            candidates.append(Path(root) / "platform-tools" / adb)
+    if is_windows():
+        if local := os.environ.get("LOCALAPPDATA"):
+            candidates.append(Path(local) / "Android" / "Sdk" / "platform-tools" / adb)
+    else:
+        candidates.append(Path.home() / "Library/Android/sdk/platform-tools" / adb)
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
