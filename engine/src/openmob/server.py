@@ -1,8 +1,10 @@
 """HTTP + WebSocket API server (see docs/API.md)."""
 
 import asyncio
+import contextlib
 import io
 import tempfile
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -18,7 +20,8 @@ from openmob.manager import DeviceManager, DeviceNotFound
 HOST = "127.0.0.1"
 PORT = 8930
 
-STREAM_FPS = 8
+STREAM_FPS = 8  # screenshot-poll path (Android, and iOS fallback)
+RELAY_MAX_FPS = 15  # cap when relaying a native device stream (iOS MJPEG)
 JPEG_QUALITY = 70
 
 manager = DeviceManager()
@@ -137,15 +140,24 @@ def launch(device_id: str, body: PackageBody) -> dict[str, bool]:
 
 @router.websocket("/devices/{device_id}/stream")
 async def stream(websocket: WebSocket, device_id: str) -> None:
-    """Push binary JPEG frames until the client disconnects."""
+    """Push binary JPEG frames until the client disconnects.
+
+    Devices exposing a native frame stream (iOS via WDA's MJPEG server) are relayed
+    directly; when that stream is unavailable — or for devices without one (Android) —
+    frames come from the screenshot-poll loop instead.
+    """
     await websocket.accept()
     try:
         device = manager.get(device_id)
     except DeviceNotFound:
         await websocket.close(code=4004, reason=f"device {device_id!r} not found")
         return
-    interval = 1 / STREAM_FPS
     try:
+        stream_frames = getattr(device, "stream_frames", None)
+        if stream_frames is not None:
+            with contextlib.suppress(DeviceError):  # MJPEG unavailable — poll instead
+                await relay_latest_frames(stream_frames(), websocket.send_bytes, RELAY_MAX_FPS)
+        interval = 1 / STREAM_FPS
         while True:
             started = asyncio.get_running_loop().time()
             frame = await run_in_threadpool(_capture_jpeg, device)
@@ -156,6 +168,61 @@ async def stream(websocket: WebSocket, device_id: str) -> None:
         pass
     except DeviceError:
         await websocket.close(code=1011, reason="screenshot failed")
+
+
+async def relay_latest_frames(
+    frames: AsyncIterator[bytes],
+    send: Callable[[bytes], Awaitable[None]],
+    max_fps: float,
+) -> None:
+    """Forward frames to `send`, always the newest one, at most `max_fps` per second.
+
+    The producer is drained continuously into a single latest-frame slot so it never
+    backs up: frames that arrive while the consumer is busy are dropped in favor of
+    the newest (this keeps mirror latency at ~one frame regardless of consumer speed).
+    Returns when the producer ends; re-raises whatever error ended it.
+    """
+    latest: bytes | None = None
+    done = False
+    fresh = asyncio.Event()
+    errors: list[Exception] = []
+
+    async def pump() -> None:
+        nonlocal latest, done
+        try:
+            async for frame in frames:
+                latest = frame
+                fresh.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            done = True
+            fresh.set()
+
+    pump_task = asyncio.create_task(pump())
+    interval = 1 / max_fps
+    loop = asyncio.get_running_loop()
+    try:
+        while True:
+            if not done:
+                await fresh.wait()
+            fresh.clear()  # before reading the slot, so a newer frame re-wakes us
+            frame, latest = latest, None
+            if frame is not None:
+                started = loop.time()
+                await send(frame)
+                elapsed = loop.time() - started
+                await asyncio.sleep(max(0.0, interval - elapsed))
+            elif done:
+                break
+        if errors:
+            raise errors[0]
+    finally:
+        pump_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump_task
 
 
 def _capture_jpeg(device: Device) -> bytes:

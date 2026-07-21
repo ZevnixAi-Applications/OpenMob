@@ -27,7 +27,12 @@ All action endpoints return `{"ok":true}` or HTTP 4xx/5xx with `{"detail":"..."}
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/stream`
 
-Server pushes binary JPEG frames (one WebSocket binary message per frame) at ~5–10 fps. Client sends nothing; close to stop.
+Server pushes binary JPEG frames (one WebSocket binary message per frame). Client sends nothing; close to stop.
+
+- **iOS**: frames are relayed from WDA's MJPEG screen stream (see docs/IOS.md), capped at ~15 fps; only the newest frame is sent, stale frames are dropped. If the MJPEG stream is unavailable, the server falls back to screenshot polling (~1 fps in practice).
+- **Android** (and the iOS fallback): screenshot-poll loop at up to ~8 fps.
+
+The wire contract is identical in all cases: binary JPEG messages, no metadata.
 
 ## MCP server
 
