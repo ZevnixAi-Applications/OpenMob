@@ -5,11 +5,23 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/engine_client.dart';
 import '../services/engine_launcher.dart';
+import '../util/coord_sync.dart';
+
+/// How the main pane lays out open devices.
+enum PaneLayout {
+  /// Only the active tab's device fills the pane.
+  single,
+
+  /// All open devices are visible: 1-3 side by side, 4+ in a 2-column grid.
+  split,
+}
 
 class AppState extends ChangeNotifier {
   static const String defaultBaseUrl = 'http://127.0.0.1:8930';
   static const String _prefsKey = 'engine_base_url';
   static const String _commandPrefsKey = 'engine_start_command';
+  static const String _openTabsKey = 'open_device_ids';
+  static const String _activeTabKey = 'active_device_id';
   static const Duration _pollInterval = Duration(seconds: 5);
   static const Duration _startTimeout = Duration(seconds: 30);
 
@@ -24,7 +36,25 @@ class AppState extends ChangeNotifier {
   String? engineVersion;
   List<Device> devices = [];
   List<VirtualDevice> virtualDevices = [];
-  String? selectedDeviceId;
+
+  /// Ordered ids of the devices open as tabs.
+  final List<String> openDeviceIds = [];
+
+  /// Id of the active tab. In single layout it is the visible pane; in split
+  /// layout it is the focused pane that the global toolbar targets.
+  String? activeDeviceId;
+
+  PaneLayout layout = PaneLayout.single;
+
+  /// When true (split layout only), input performed on any pane is mirrored
+  /// to every other visible online device.
+  bool syncMode = false;
+
+  /// Bumped on every sync broadcast so mirrored panes can flash briefly.
+  int syncPulse = 0;
+
+  /// The pane that originated the last sync broadcast (it does not flash).
+  String? syncPulseSourceId;
 
   /// Names of virtual devices the user just launched, shown as "booting…"
   /// until polling reports them running.
@@ -42,11 +72,27 @@ class AppState extends ChangeNotifier {
   /// Why the last "Start engine" attempt failed, if it did.
   String? engineStartError;
 
-  Device? get selectedDevice {
+  bool get syncActive => syncMode && layout == PaneLayout.split;
+
+  Device? deviceById(String id) {
     for (final d in devices) {
-      if (d.id == selectedDeviceId) return d;
+      if (d.id == id) return d;
     }
     return null;
+  }
+
+  Device? get activeDevice =>
+      activeDeviceId == null ? null : deviceById(activeDeviceId!);
+
+  /// Open tabs resolved against the current device list, in tab order.
+  /// Ids the engine no longer reports are omitted (and pruned on refresh).
+  List<Device> get openDevices {
+    final out = <Device>[];
+    for (final id in openDeviceIds) {
+      final d = deviceById(id);
+      if (d != null) out.add(d);
+    }
+    return out;
   }
 
   Future<void> init() async {
@@ -59,6 +105,16 @@ class AppState extends ChangeNotifier {
     engineCommand = (savedCommand != null && savedCommand.trim().isNotEmpty)
         ? savedCommand
         : EngineLauncher.defaultCommand();
+    final savedTabs = prefs.getStringList(_openTabsKey) ?? const [];
+    openDeviceIds
+      ..clear()
+      ..addAll(savedTabs.where((id) => id.trim().isNotEmpty));
+    final savedActive = prefs.getString(_activeTabKey);
+    if (savedActive != null && openDeviceIds.contains(savedActive)) {
+      activeDeviceId = savedActive;
+    } else if (openDeviceIds.isNotEmpty) {
+      activeDeviceId = openDeviceIds.first;
+    }
     _pollTimer = Timer.periodic(_pollInterval, (_) => refresh());
     await refresh();
   }
@@ -116,7 +172,6 @@ class AppState extends ChangeNotifier {
     engineOnline = false;
     engineVersion = null;
     devices = [];
-    selectedDeviceId = null;
     _notify();
     await refresh();
   }
@@ -137,13 +192,9 @@ class AppState extends ChangeNotifier {
 
     try {
       devices = await _client.devices();
-      if (selectedDeviceId != null &&
-          !devices.any((d) => d.id == selectedDeviceId)) {
-        selectedDeviceId = null;
-      }
+      _pruneVanishedTabs();
     } catch (_) {
       devices = [];
-      selectedDeviceId = null;
     }
 
     try {
@@ -172,40 +223,236 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  void selectDevice(String id) {
-    if (selectedDeviceId == id) return;
-    selectedDeviceId = id;
+  /// Drops open tabs whose device the engine no longer reports at all.
+  /// Offline devices stay open (their panes show an offline state).
+  void _pruneVanishedTabs() {
+    final known = devices.map((d) => d.id).toSet();
+    if (!openDeviceIds.any((id) => !known.contains(id))) return;
+    openDeviceIds.removeWhere((id) => !known.contains(id));
+    if (activeDeviceId != null && !openDeviceIds.contains(activeDeviceId)) {
+      activeDeviceId = openDeviceIds.isEmpty ? null : openDeviceIds.first;
+    }
+    if (openDeviceIds.isEmpty) {
+      layout = PaneLayout.single;
+      syncMode = false;
+    }
+    _persistTabs();
+  }
+
+  // --- Tab management ---
+
+  /// Opens [id] as a tab (if not already open) and makes it active.
+  void openDevice(String id) {
+    final already = openDeviceIds.contains(id);
+    if (!already) openDeviceIds.add(id);
+    if (already && activeDeviceId == id) return;
+    activeDeviceId = id;
+    _persistTabs();
     _notify();
   }
 
-  // --- Device actions (fire against the selected device) ---
+  void activateDevice(String id) {
+    if (!openDeviceIds.contains(id) || activeDeviceId == id) return;
+    activeDeviceId = id;
+    _persistTabs();
+    _notify();
+  }
 
-  Future<void> tap(int x, int y) =>
-      _action((id) => _client.tap(id, x, y));
+  /// Closes the tab for [id]. Closing the active tab activates its right
+  /// neighbor (or the left one when the rightmost tab was closed).
+  void closeDevice(String id) {
+    final idx = openDeviceIds.indexOf(id);
+    if (idx == -1) return;
+    openDeviceIds.removeAt(idx);
+    if (activeDeviceId == id) {
+      activeDeviceId = openDeviceIds.isEmpty
+          ? null
+          : openDeviceIds[
+              idx < openDeviceIds.length ? idx : openDeviceIds.length - 1];
+    }
+    if (openDeviceIds.isEmpty) {
+      layout = PaneLayout.single;
+      syncMode = false;
+    }
+    _persistTabs();
+    _notify();
+  }
 
-  Future<void> swipe(int x1, int y1, int x2, int y2, int durationMs) =>
-      _action((id) => _client.swipe(id,
-          x1: x1, y1: y1, x2: x2, y2: y2, durationMs: durationMs));
+  void setLayout(PaneLayout value) {
+    if (layout == value) return;
+    layout = value;
+    if (layout == PaneLayout.single) syncMode = false;
+    _notify();
+  }
 
-  Future<void> sendText(String text) =>
-      _action((id) => _client.sendText(id, text));
+  void toggleLayout() => setLayout(
+      layout == PaneLayout.single ? PaneLayout.split : PaneLayout.single);
 
-  Future<void> pressKey(String key) =>
-      _action((id) => _client.pressKey(id, key));
+  /// Toggles sync-input mode. Only meaningful in split layout.
+  void toggleSync() {
+    if (layout != PaneLayout.split) return;
+    syncMode = !syncMode;
+    _notify();
+  }
 
-  Future<void> _action(Future<void> Function(String id) run) async {
-    final id = selectedDeviceId;
-    if (id == null) return;
+  void _persistTabs() async {
     try {
-      await run(id);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_openTabsKey, List.of(openDeviceIds));
+      final active = activeDeviceId;
+      if (active == null) {
+        await prefs.remove(_activeTabKey);
+      } else {
+        await prefs.setString(_activeTabKey, active);
+      }
+    } catch (_) {
+      // Persistence is best-effort; never break the UI over it.
+    }
+  }
+
+  // --- Device actions ---
+  //
+  // Every action originates from a source device (the pane it was performed
+  // on, or the active tab for the global toolbar). When sync is active the
+  // action is also mirrored to every other visible online device,
+  // fire-and-forget: one device failing never blocks the others. Tap/swipe
+  // coordinates are translated proportionally; text and keys go verbatim.
+
+  Future<void> tapDevice(String sourceId, int x, int y) async {
+    final src = deviceById(sourceId);
+    final targets = _syncTargets(sourceId);
+    if (targets.isNotEmpty && src != null) {
+      _firePulse(sourceId);
+      for (final t in targets) {
+        final p = translatePoint(
+          x: x,
+          y: y,
+          srcWidth: src.width,
+          srcHeight: src.height,
+          dstWidth: t.width,
+          dstHeight: t.height,
+        );
+        if (p == null) continue;
+        _fireAndForget(t, () => _client.tap(t.id, p.x, p.y));
+      }
+    }
+    await _runSource(() => _client.tap(sourceId, x, y));
+  }
+
+  Future<void> swipeDevice(
+    String sourceId,
+    int x1,
+    int y1,
+    int x2,
+    int y2,
+    int durationMs,
+  ) async {
+    final src = deviceById(sourceId);
+    final targets = _syncTargets(sourceId);
+    if (targets.isNotEmpty && src != null) {
+      _firePulse(sourceId);
+      for (final t in targets) {
+        final p1 = translatePoint(
+          x: x1,
+          y: y1,
+          srcWidth: src.width,
+          srcHeight: src.height,
+          dstWidth: t.width,
+          dstHeight: t.height,
+        );
+        final p2 = translatePoint(
+          x: x2,
+          y: y2,
+          srcWidth: src.width,
+          srcHeight: src.height,
+          dstWidth: t.width,
+          dstHeight: t.height,
+        );
+        if (p1 == null || p2 == null) continue;
+        _fireAndForget(
+          t,
+          () => _client.swipe(t.id,
+              x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, durationMs: durationMs),
+        );
+      }
+    }
+    await _runSource(() => _client.swipe(sourceId,
+        x1: x1, y1: y1, x2: x2, y2: y2, durationMs: durationMs));
+  }
+
+  Future<void> sendTextDevice(String sourceId, String text) =>
+      _verbatimAction(sourceId, (id) => _client.sendText(id, text));
+
+  Future<void> pressKeyDevice(String sourceId, String key) =>
+      _verbatimAction(sourceId, (id) => _client.pressKey(id, key));
+
+  /// Toolbar convenience: targets the active (focused) device.
+  Future<void> sendText(String text) {
+    final id = activeDeviceId;
+    if (id == null) return Future.value();
+    return sendTextDevice(id, text);
+  }
+
+  /// Toolbar convenience: targets the active (focused) device.
+  Future<void> pressKey(String key) {
+    final id = activeDeviceId;
+    if (id == null) return Future.value();
+    return pressKeyDevice(id, key);
+  }
+
+  Future<void> _verbatimAction(
+    String sourceId,
+    Future<void> Function(String id) run,
+  ) async {
+    final targets = _syncTargets(sourceId);
+    if (targets.isNotEmpty) {
+      _firePulse(sourceId);
+      for (final t in targets) {
+        _fireAndForget(t, () => run(t.id));
+      }
+    }
+    await _runSource(() => run(sourceId));
+  }
+
+  /// Online open devices other than [sourceId]; empty when sync is off.
+  List<Device> _syncTargets(String sourceId) {
+    if (!syncActive) return const [];
+    return [
+      for (final d in openDevices)
+        if (d.id != sourceId && d.online) d,
+    ];
+  }
+
+  void _firePulse(String sourceId) {
+    syncPulse++;
+    syncPulseSourceId = sourceId;
+    _notify();
+  }
+
+  void _fireAndForget(Device target, Future<void> Function() run) {
+    run().catchError((Object e) {
+      _reportError(
+          '${target.name}: ${e is EngineException ? e.message : 'unreachable'}');
+    });
+  }
+
+  Future<void> _runSource(Future<void> Function() run) async {
+    try {
+      await run();
       if (lastError != null) {
         lastError = null;
         _notify();
       }
     } catch (e) {
-      lastError = e is EngineException ? e.message : 'Engine unreachable';
-      _notify();
+      _reportError(e is EngineException ? e.message : 'Engine unreachable');
     }
+  }
+
+  /// Surfaces an action error in the banner, deduping identical repeats.
+  void _reportError(String message) {
+    if (lastError == message) return;
+    lastError = message;
+    _notify();
   }
 
   void _notify() {

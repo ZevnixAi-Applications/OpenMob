@@ -52,8 +52,8 @@ class Sidebar extends StatelessWidget {
                           const EdgeInsets.symmetric(horizontal: 8),
                       child: _DeviceRow(
                         device: device,
-                        selected: device.id == state.selectedDeviceId,
-                        onTap: () => state.selectDevice(device.id),
+                        selected: device.id == state.activeDeviceId,
+                        onTap: () => state.openDevice(device.id),
                       ),
                     ),
                 const _SectionHeader(title: 'VIRTUAL DEVICES'),

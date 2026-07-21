@@ -31,7 +31,8 @@ class _DeviceToolbarState extends State<DeviceToolbar> {
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    final enabled = state.selectedDevice?.online ?? false;
+    final device = state.activeDevice;
+    final enabled = device?.online ?? false;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -41,6 +42,19 @@ class _DeviceToolbarState extends State<DeviceToolbar> {
       ),
       child: Row(
         children: [
+          // In split view the toolbar targets the focused (outlined) pane;
+          // make that target explicit.
+          if (state.layout == PaneLayout.split && device != null)
+            Container(
+              margin: const EdgeInsets.only(right: 10),
+              constraints: const BoxConstraints(maxWidth: 140),
+              child: Text(
+                '→ ${device.name}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11, color: OM.textMuted),
+              ),
+            ),
           _KeyButton(
             icon: Icons.arrow_back,
             label: 'Back',
