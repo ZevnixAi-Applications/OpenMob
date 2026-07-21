@@ -120,11 +120,12 @@ log "Runner rebranded to 'OM Runner' (display name + launch screen) and re-signe
 log "Installing runner app onto device ..."
 xcrun devicectl device install app --device "${UDID}" "${RUNNER_APP}"
 
-# --- Launch standalone (no xcodebuild session needed) ----------------------
-
-log "Launching OpenMob Runner ..."
-xcrun devicectl device process launch --terminate-existing --device "${UDID}" "${BUNDLE_ID}.xctrunner" || \
-    log "Launch failed — unlock the phone and re-run, or use the xcodebuild fallback below."
+# NOTE: do NOT launch the runner with `devicectl device process launch` —
+# on iOS 17+ (verified on iOS 26) the xctrunner aborts in
+# XCTRunnerDaemonSession without the test-manager session that xcodebuild
+# establishes. The runner must be started with `test-without-building`
+# (step 1 below), with the phone UNLOCKED (screen lock kills the session;
+# set Auto-Lock to Never while automating).
 
 log "Done. Runner installed as ${BUNDLE_ID}.xctrunner"
 log "Next steps (see docs/IOS.md):"
