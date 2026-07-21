@@ -87,6 +87,34 @@ def test_capability_satisfied(monkeypatch):
     assert url == "connect://[fd12::1]:1234"
 
 
+def test_capability_trusts_url_without_tunneld(monkeypatch):
+    """A supplied debugserver_url is authoritative even when tunneld is not running.
+
+    This is the no-sudo userspace path: `debugserver start-server --userspace
+    --local-port` forwards a debugserver to a local port without ever registering with
+    tunneld, so requiring tunneld here would wrongly reject a valid setup.
+    """
+    called = False
+
+    def _fail(url=None):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr("openmob.debugger.tunneld_devices", _fail)
+    url = check_real_device_support("00008101-FAKE", "connect://[127.0.0.1]:10011")
+    assert url == "connect://[127.0.0.1]:10011"
+    assert not called  # tunneld is never probed when a URL is provided
+
+
+def test_capability_no_url_offers_no_sudo_command(monkeypatch):
+    """Guidance for the no-url case includes the verified no-sudo userspace command."""
+    monkeypatch.setattr("openmob.debugger.tunneld_devices", lambda url=None: None)
+    with pytest.raises(CapabilityError) as exc_info:
+        check_real_device_support("00008101-FAKE")
+    assert any("--userspace" in cmd for cmd in exc_info.value.commands)
+
+
 # --- session manager with a fake worker -------------------------------------
 
 SIM_UDID = "B8354FBC-0000-0000-0000-000000000000"

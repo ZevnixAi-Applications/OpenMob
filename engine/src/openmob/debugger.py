@@ -30,6 +30,13 @@ TUNNELD_URL = "http://127.0.0.1:49151"
 
 TUNNELD_COMMAND = "sudo pymobiledevice3 remote tunneld"
 DEBUGSERVER_COMMAND = "pymobiledevice3 developer debugserver start-server"
+# No-sudo alternative (iOS 17+): a pure-Python userspace tunnel, forwarded to a local
+# port so an external lldb can reach it. Verified live on iOS 26 — establishes the
+# tunnel and starts debugserver in one process, no root. It prints a
+# `connect://[127.0.0.1]:10011` URL to pass as debugserver_url.
+USERSPACE_DEBUGSERVER_COMMAND = (
+    "pymobiledevice3 developer debugserver start-server --userspace --local-port 10011"
+)
 
 
 class DebugError(Exception):
@@ -116,12 +123,23 @@ def check_real_device_support(udid: str, debugserver_url: str | None = None) -> 
 
     Raises CapabilityError with the exact commands to run when something is missing.
     """
+    # A caller-supplied debugserver URL is authoritative: the user has already stood up
+    # a debugserver — via the no-sudo userspace tunnel (start-server --userspace
+    # --local-port) or a root tunneld. The userspace path never registers with tunneld,
+    # so gating on tunneld here would wrongly reject a perfectly good no-sudo setup.
+    if debugserver_url:
+        return debugserver_url
     tunnels = tunneld_devices()
     if tunnels is None:
         raise CapabilityError(
-            f"device {udid} is a real device: debugging it requires a usermode tunnel, "
-            "and tunneld is not running on this machine",
-            commands=[TUNNELD_COMMAND, f"{DEBUGSERVER_COMMAND}  # then retry with its URL"],
+            f"device {udid} is a real device (iOS 17+): debugging it requires a debugserver "
+            "and none was provided. Start one (the userspace option needs no root), then "
+            "retry with debugserver_url set to the connect:// URL it prints",
+            commands=[
+                TUNNELD_COMMAND,
+                f"{DEBUGSERVER_COMMAND}  # then retry with its URL",
+                f"{USERSPACE_DEBUGSERVER_COMMAND}  # no sudo; use this URL directly",
+            ],
         )
     if udid not in tunnels:
         raise CapabilityError(
@@ -129,13 +147,13 @@ def check_real_device_support(udid: str, debugserver_url: str | None = None) -> 
             "(is it connected and unlocked?)",
             commands=[TUNNELD_COMMAND],
         )
-    if not debugserver_url:
-        raise CapabilityError(
-            f"tunnel to {udid} is up, but a debugserver is required: run the command "
-            "below and retry with debugserver_url set to the connect URL it prints",
-            commands=[DEBUGSERVER_COMMAND],
-        )
-    return debugserver_url
+    # A tunnel exists but no debugserver_url was supplied (the early return above only
+    # fires when one is): tell the caller how to start one on this tunnel.
+    raise CapabilityError(
+        f"tunnel to {udid} is up, but a debugserver is required: run the command "
+        "below and retry with debugserver_url set to the connect URL it prints",
+        commands=[f"{DEBUGSERVER_COMMAND} --tunnel {udid}"],
+    )
 
 
 # --- worker transport -------------------------------------------------------
