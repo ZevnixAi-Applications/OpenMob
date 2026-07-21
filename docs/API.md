@@ -105,7 +105,7 @@ The tail can be scoped to a single app instead of the whole device with the same
 
 ## MCP server
 
-`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`, `list_virtual_devices`, `launch_virtual_device`, plus developer tools: `get_logs`, `save_screenshot`, `get_crash_logs`, `open_url`, `clear_app_data`, `force_stop`, `push_file`, `pull_file`, `device_info`, `flutter_vm_service`, `flutter_hot_reload`.
+`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`, `list_virtual_devices`, `launch_virtual_device`, `get_create_options`, `create_virtual_device`, plus developer tools: `get_logs`, `save_screenshot`, `get_crash_logs`, `open_url`, `clear_app_data`, `force_stop`, `push_file`, `pull_file`, `device_info`, `flutter_vm_service`, `flutter_run`, `flutter_hot_reload`, `flutter_hot_restart`, `flutter_stop`, `flutter_devtools_url`.
 
 Debugger tools (one session per device, addressed by `device_id`): `debug_attach`, `debug_breakpoint` (`op`: add/remove/list), `debug_step` (`kind`: in/over/out/continue/pause), `debug_eval`, `debug_state`, `debug_detach`. See [DEBUGGING.md](DEBUGGING.md).
 
