@@ -213,8 +213,10 @@ class LldbWorker:
         error = process.Continue()
         if error.Fail():
             raise WorkerError("continue failed: %s" % error.GetCString())
-        # Fire-and-forget: give it a beat, report whatever state it is in now.
-        state = self.wait_for_state({"running", "stopped", "exited"}, 1.0)
+        # Fire-and-forget, but wait out the stale pre-continue "stopped" state so
+        # the response reflects the resume (it may already have re-stopped at a
+        # breakpoint by the time the caller polls state — that is fine).
+        state = self.wait_for_state({"running", "exited"}, 1.0)
         return {"state": state}
 
     def cmd_pause(self, req):
