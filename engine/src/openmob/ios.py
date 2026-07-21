@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 
 from openmob.device import Device, DeviceError
-from openmob.logstream import LogStream, apply_filter
+from openmob.logstream import LogScope, LogStream, apply_filter
 
 DEFAULT_WDA_URL = "http://127.0.0.1:8100"
 DEFAULT_MJPEG_PORT = 9100
@@ -56,6 +56,15 @@ def pymobiledevice3_cmd(*args: str, udid: str | None = None) -> list[str]:
     if udid:
         cmd += ["--udid", udid]
     return cmd
+
+
+def ios_process_name(package: str) -> str:
+    """Best-effort iOS process name from a bundle id (its last dotted component).
+
+    For most Flutter/Xcode apps the running process name equals CFBundleExecutable,
+    which is typically the bundle id's final component (`com.acme.MyApp` -> `MyApp`).
+    """
+    return package.rsplit(".", 1)[-1] if "." in package else package
 
 
 def crash_sort_key(name: str) -> str:
@@ -417,9 +426,30 @@ class IosDevice(Device):
             )
         return result.stdout.decode(errors="replace")
 
-    def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
+    def _syslog_args(self, scope: LogScope | None) -> list[str]:
+        """Build `pymobiledevice3 syslog live` args, adding a process filter when scoped.
+
+        iOS syslog filters by pid or process *name* (not bundle id). We derive the
+        process name from the bundle id's last component (usually the CFBundleExecutable
+        for Flutter/Xcode apps); pass an explicit `pid` when that guess is wrong. syslog's
+        process-name filter follows the app across restarts on its own, so no pid
+        re-resolution is needed here. `foreground` scoping is not available on iOS.
+        """
+        args = ["syslog", "live"]
+        if scope and scope.pid is not None:
+            args += ["--pid", str(scope.pid)]
+        elif scope and scope.package:
+            args += ["--process-name", ios_process_name(scope.package)]
+        return args
+
+    def logs(
+        self,
+        lines: int = 200,
+        filter_str: str | None = None,
+        scope: LogScope | None = None,
+    ) -> str:
         """Capture ~3s of live syslog (iOS has no dump-the-buffer equivalent over usbmux)."""
-        cmd = pymobiledevice3_cmd("syslog", "live", udid=self._udid)
+        cmd = pymobiledevice3_cmd(*self._syslog_args(scope), udid=self._udid)
         try:
             result = subprocess.run(
                 cmd,
@@ -432,9 +462,9 @@ class IosDevice(Device):
             output = exc.stdout or b""
         return apply_filter(output.decode(errors="replace"), filter_str, lines)
 
-    def stream_logs(self) -> LogStream:
+    def stream_logs(self, scope: LogScope | None = None) -> LogStream:
         return LogStream(
-            pymobiledevice3_cmd("syslog", "live", udid=self._udid),
+            pymobiledevice3_cmd(*self._syslog_args(scope), udid=self._udid),
             env={"PYTHONUNBUFFERED": "1"},
         )
 

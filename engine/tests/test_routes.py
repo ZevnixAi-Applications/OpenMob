@@ -85,11 +85,12 @@ class FakeDevice(Device):
     def launch_app(self, package: str) -> None:
         self.calls.append(("launch_app", package))
 
-    def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
-        self.calls.append(("logs", lines, filter_str))
+    def logs(self, lines: int = 200, filter_str: str | None = None, scope=None) -> str:
+        self.calls.append(("logs", lines, filter_str, scope))
         return "log line 1\nlog line 2"
 
-    def stream_logs(self) -> FakeLogStream:
+    def stream_logs(self, scope=None) -> FakeLogStream:
+        self.calls.append(("stream_logs", scope))
         return self.log_stream
 
     def crash_reports(self, limit: int = 5) -> list[dict[str, str]]:
@@ -133,7 +134,26 @@ def test_get_logs(client: TestClient, fake_device: FakeDevice) -> None:
     response = client.get("/api/v1/devices/fake-1/logs?lines=50&filter=boom")
     assert response.status_code == 200
     assert response.json() == {"logs": "log line 1\nlog line 2"}
-    assert ("logs", 50, "boom") in fake_device.calls
+    assert ("logs", 50, "boom", None) in fake_device.calls
+
+
+def test_get_logs_scoped_by_package(client: TestClient, fake_device: FakeDevice) -> None:
+    response = client.get("/api/v1/devices/fake-1/logs?package=com.example.app&flutter=true")
+    assert response.status_code == 200
+    scope = next(call[3] for call in fake_device.calls if call[0] == "logs")
+    assert scope is not None
+    assert scope.package == "com.example.app"
+    assert scope.flutter is True
+
+
+def test_logs_stream_ws_passes_scope(client: TestClient, fake_device: FakeDevice) -> None:
+    url = "/api/v1/devices/fake-1/logs/stream?package=com.example.app&scope=foreground"
+    with client.websocket_connect(url):
+        pass
+    scope = next(call[1] for call in fake_device.calls if call[0] == "stream_logs")
+    assert scope is not None
+    assert scope.package == "com.example.app"
+    assert scope.foreground is True
 
 
 def test_save_screenshot_writes_png(client: TestClient, tmp_path) -> None:

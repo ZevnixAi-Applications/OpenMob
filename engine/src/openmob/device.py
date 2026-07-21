@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from openmob.logstream import LogStream
+from openmob.logstream import LogScope, LogStream
 
 
 class DeviceError(Exception):
@@ -79,12 +79,24 @@ class Device(ABC):
         """Launch an app by package/bundle identifier."""
 
     @abstractmethod
-    def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
-        """Return recent device logs, filtered to lines containing `filter_str`."""
+    def logs(
+        self,
+        lines: int = 200,
+        filter_str: str | None = None,
+        scope: LogScope | None = None,
+    ) -> str:
+        """Return recent logs, filtered to lines containing `filter_str`.
+
+        When `scope` targets a single app, the tail is restricted to that app's
+        process(es); an app that is not running yields an empty result.
+        """
 
     @abstractmethod
-    def stream_logs(self) -> LogStream:
-        """Start a live log tail; caller must close() the returned stream."""
+    def stream_logs(self, scope: LogScope | None = None) -> LogStream:
+        """Start a live log tail; caller must close() the returned stream.
+
+        When `scope` targets a single app, only that app's log output is streamed.
+        """
 
     @abstractmethod
     def crash_reports(self, limit: int = 5) -> list[dict[str, str]]:

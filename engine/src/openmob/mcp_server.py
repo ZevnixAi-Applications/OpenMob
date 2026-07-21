@@ -7,6 +7,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from openmob import flutter, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager
 from openmob.device import DeviceError
+from openmob.logstream import LogScope
 from openmob.manager import DeviceManager
 
 manager = DeviceManager()
@@ -178,9 +179,32 @@ def debug_detach(device_id: str, kill: bool = False) -> dict:
 
 
 @mcp.tool()
-def get_logs(device_id: str, lines: int = 200, filter: str = "") -> str:
-    """Get recent device logs, optionally filtered to lines containing `filter`."""
-    return manager.get(device_id).logs(lines=lines, filter_str=filter or None)
+def get_logs(
+    device_id: str,
+    lines: int = 200,
+    filter: str = "",
+    package: str = "",
+    scope: str = "",
+    flutter: bool = False,
+) -> str:
+    """Get recent logs, scoped to one app instead of the whole device by default.
+
+    Pass `package` to scope to that app's live process (the useful case: an app's own
+    output, including Flutter print/debugPrint), or `scope="foreground"` to auto-target
+    the foreground app (Android). `flutter=True` narrows to Flutter framework output.
+    With none of these it returns the whole-device log. `filter` is a case-insensitive
+    substring match. A scoped app that is not running returns an empty string.
+    """
+    log_scope = LogScope(
+        package=package or None,
+        foreground=scope == "foreground",
+        flutter=flutter,
+    )
+    return manager.get(device_id).logs(
+        lines=lines,
+        filter_str=filter or None,
+        scope=log_scope if (log_scope.is_app_scoped or log_scope.flutter) else None,
+    )
 
 
 @mcp.tool()
