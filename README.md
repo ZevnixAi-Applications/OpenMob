@@ -1,302 +1,189 @@
 # OpenMob
 
-[![CI](https://github.com/ZevnixAi-Applications/OpenMob/actions/workflows/ci.yml/badge.svg)](https://github.com/ZevnixAi-Applications/OpenMob/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Platform](https://img.shields.io/badge/host-macOS-000000?logo=apple&logoColor=white)](#platform-support)
-[![Devices](https://img.shields.io/badge/devices-Android%20%2B%20iOS-3ddc84?logo=android&logoColor=white)](#platform-support)
+Your phones, on your Mac — for you and your AI. Mirror, tap, type, install,
+log, and debug real Android and iOS devices from one window, over USB or Wi-Fi.
 
-**Open-source mobile device control for humans and AI agents.**
+![OpenMob desktop app](docs/img/hero.png)
 
-OpenMob controls real Android and iOS devices — and emulators and simulators —
-from your Mac. Live screen mirror, tap/swipe/type, app install, app-scoped logs
-and crash reports, Flutter run-mode with genuine hot reload and DevTools, an
-interactive iOS lldb debugger, and one-command virtual-device create/launch.
+OpenMob is an open-source device lab. It puts every phone, emulator, and
+simulator you own into a single Mac app — with a live screen you can click, app
+logs scoped to *your* app, Flutter hot reload, and a built-in debugger. And
+because it speaks [MCP](https://modelcontextprotocol.io), an AI agent like Claude
+can drive those same devices for you: "open my app, tap through checkout, and
+tell me what the logs say."
 
-You drive it three ways: a **Flutter desktop app**, a **CLI**, or an **MCP
-server** that lets AI agents (Claude and others) operate the phone directly.
+- Live screen mirror with click-to-tap and drag-to-swipe
+- **Android and iOS** — real devices, plus emulators and simulators
+- App-scoped logs, crash reports, deep links, and file transfer
+- **Flutter run-mode** with real hot reload, hot restart, and DevTools
+- Create and launch emulators/simulators — headless, right inside the app
+- An **MCP server** so Claude and other agents can control your devices
+- One Python engine, a Mac app, and a CLI — MIT licensed, no subscription
 
 ---
 
-## Why OpenMob
+## What you can do
 
-Mirroring and automating a phone from a laptop usually means gluing together
-`adb`, WebDriverAgent, `pymobiledevice3`, `simctl`, screen-copy tools, and a pile
-of shell scripts — or paying for a closed product that does it for you. OpenMob
-packages those free, battle-tested primitives into one coherent tool with a real
-UI and a first-class MCP surface, and keeps the whole thing open (MIT).
+| | |
+| --- | --- |
+| **Mirror & control** | Watch a device live and tap, swipe, type, and press keys straight on the screen |
+| **Manage apps** | Install, launch, force-stop, uninstall, clear data, open deep links |
+| **See what's happening** | Stream logs filtered to a single app, pull crash reports, read battery/OS/model |
+| **Debug Flutter** | Launch your project through OpenMob and get working hot reload, hot restart, and DevTools |
+| **Debug iOS** | Attach an interactive lldb session to an app — breakpoints, step, eval, backtraces |
+| **Spin up devices** | List, create, and boot Android AVDs and iOS simulators without leaving the app |
+| **Let AI drive** | Point Claude at the MCP server and it can do all of the above on your behalf |
 
-- **One abstraction, every target.** Android phones, iPhones, Android emulators,
-  and iOS simulators all present the same device interface and the same API.
-- **Built for AI agents, not just people.** Every capability the app has is also
-  an MCP tool, so an agent can list devices, see the screen, tap, read *your
-  app's* logs, and debug — over the same engine.
-- **Honest about iOS.** iOS is genuinely hard; OpenMob documents exactly what is
-  verified on real hardware and what still needs setup or isn't wired yet, rather
-  than hiding it. See [Roadmap & limitations](#roadmap--limitations).
+---
 
-## Features
+## Install
 
-**Device control**
-- 🖥️ Live screen mirror — low-latency H.264 video on Android, WDA MJPEG on iOS,
-  with automatic fallbacks so a device never goes blank.
-- 👆 Tap, swipe, type, and hardware keys (home / back / power / volume / enter).
-- 📱 Multi-device view: tabs, a side-by-side split, and an optional
-  synchronized-input mode that mirrors your gestures to every pane at once.
+**1. Get the app.** Download the latest `OpenMob-macOS.dmg` from the
+[Releases](https://github.com/ZevnixAi-Applications/OpenMob/releases/latest)
+page, open it, and drag **OpenMob** into **Applications**.
 
-**App workflow**
-- 📦 Install and uninstall `.apk` / `.ipa`, list installed apps, launch, force-stop.
-- 🪵 **App-scoped logs** — see *your app's* output (including Flutter
-  `print` / `debugPrint`), not a device-wide firehose, with a live tail that
-  follows the app across restarts.
-- 💥 Parsed crash reports, newest first (Android dropbox/logcat, iOS `.ips`).
-- 🔗 Deep links, file push/pull, `clear_app_data` (Android), device info.
+> The app is signed with a Developer ID. Until it's notarized, the first launch
+> needs a right-click → **Open** to get past Gatekeeper. Requires **macOS 13+**.
 
-**Flutter developer tools**
-- 🔥 `flutter run` managed by the engine, so **hot reload and hot restart are
-  real** — the engine owns the kernel compiler, not just the VM service.
-- 🛠️ A DevTools URL wired straight to the running app's VM service.
-
-**iOS debugging**
-- 🐞 An interactive **lldb** session over REST/MCP: attach, breakpoints, step,
-  backtrace, typed locals, expression eval — fully working against the simulator.
-
-**Virtual devices**
-- 🚀 List, **create**, and boot Android AVDs and iOS simulators from OpenMob;
-  headless by default so they mirror inside the app instead of a separate window.
-
-## Quick start
-
-### 1. Run the engine
-
-The engine is Python, managed with [uv](https://docs.astral.sh/uv/).
+**2. Run the engine.** The app talks to a small local engine that does the
+actual device control. With [uv](https://docs.astral.sh/uv/) installed:
 
 ```sh
 git clone https://github.com/ZevnixAi-Applications/OpenMob.git
 cd OpenMob/engine
-uv sync
-uv run openmob serve        # HTTP/WebSocket API on http://127.0.0.1:8930
+uv run openmob serve        # starts the engine on 127.0.0.1:8930
 ```
 
-Plug in an Android phone with **USB debugging** enabled (accept the trust
-prompt), then in another terminal:
+**3. Plug in a device.**
+
+- **Android** — enable USB debugging and connect over USB (or Wi-Fi adb). That's
+  it; nothing is installed on the phone.
+- **iOS** — a one-time setup installs a signed runner on the iPhone. See
+  [docs/IOS.md](docs/IOS.md) or run `scripts/setup-wda.sh`.
+
+Open the app and your devices appear in the sidebar. Click one to mirror it.
+
+---
+
+## Let AI control your devices
+
+OpenMob ships an MCP server, so any MCP-capable agent can list devices, take
+screenshots, tap, type, install apps, read logs, and debug — the whole surface,
+as tools.
+
+**Claude Code:**
 
 ```sh
-uv run openmob devices      # should list your device
+claude mcp add openmob -- uv run --project /path/to/OpenMob/engine openmob mcp
 ```
 
-> Android needs `adb` (Android SDK platform-tools) on your `PATH`. iOS needs a
-> few more steps — see [docs/IOS.md](docs/IOS.md).
-
-### 2a. Open the desktop app
-
-```sh
-cd ../app
-flutter pub get
-flutter run -d macos        # the app talks to the engine on 127.0.0.1:8930
-```
-
-Your device shows up in the sidebar; click it to mirror and control it.
-
-### 2b. …or let an AI agent drive (MCP)
-
-Instead of (or alongside) the app, expose the engine to an AI agent as an MCP
-server — see the next section.
-
-Full walkthrough: **[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)**.
-
-## MCP / AI agents
-
-`openmob mcp` runs a stdio [Model Context Protocol](https://modelcontextprotocol.io)
-server. Point Claude Code, Claude Desktop, or any MCP client at it and the agent
-can see and drive your devices.
-
-Add it to your MCP config (adjust the absolute path to your checkout):
+**Claude Desktop** — add to `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "openmob": {
       "command": "uv",
-      "args": [
-        "run",
-        "--project",
-        "/absolute/path/to/OpenMob/engine",
-        "openmob",
-        "mcp"
-      ]
+      "args": ["run", "--project", "/path/to/OpenMob/engine", "openmob", "mcp"]
     }
   }
 }
 ```
 
-For Claude Code you can also register it directly:
+Now you can just ask: *"Take a screenshot of my phone, open the app, and read
+the last 50 log lines."*
 
-```sh
-claude mcp add openmob -- uv run --project /absolute/path/to/OpenMob/engine openmob mcp
-```
+---
 
-Then ask the agent things like *"list my devices, screenshot the phone, tap the
-login button, and show me the app's last 50 log lines."*
+## How it works
 
-**Tools exposed** (all addressed by `device_id` from `list_devices`):
+OpenMob is three pieces that share one contract:
 
-| Group | Tools |
-|---|---|
-| Devices | `list_devices`, `get_screenshot`, `save_screenshot`, `device_info` |
-| Input | `tap`, `swipe`, `input_text`, `press_key` |
-| Apps | `install_app`, `uninstall_app`, `list_apps`, `launch_app`, `force_stop`, `clear_app_data`, `open_url` |
-| Diagnostics | `get_logs`, `get_crash_logs`, `push_file`, `pull_file` |
-| Flutter | `flutter_run`, `flutter_hot_reload`, `flutter_hot_restart`, `flutter_stop`, `flutter_devtools_url`, `flutter_vm_service` |
-| iOS debugger | `debug_attach`, `debug_breakpoint`, `debug_step`, `debug_eval`, `debug_state`, `debug_detach` |
-| Virtual devices | `list_virtual_devices`, `launch_virtual_device`, `get_create_options`, `create_virtual_device` |
+- **The engine** (Python) is the brain. It talks to Android through `adb` and to
+  iOS through a [WebDriverAgent](https://github.com/appium/WebDriverAgent) runner
+  and `pymobiledevice3`, and exposes everything as a local HTTP/WebSocket API and
+  an MCP server.
+- **The Mac app** (Flutter) is the face — the device list, the live mirror, logs,
+  and the Flutter/debug panels. It only speaks to the engine's API.
+- **The CLI** (`openmob serve | mcp | devices`) runs the engine and the MCP
+  server, and lists what's connected.
 
-Coordinates are **device pixels** everywhere. The same capabilities are also
-available over plain HTTP/WebSocket — see [docs/API.md](docs/API.md).
+Android and iOS each have no equivalent of the other's tooling, so OpenMob wraps
+the real, free primitives — `adb` on Android, WebDriverAgent on iOS — behind one
+consistent API. The screen you see is a low-latency JPEG stream (H.264 on
+Android, WDA's MJPEG on iOS); a tap you make is translated to device pixels and
+sent back the same way. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
+full picture.
 
-## Architecture
-
-```
-┌──────────────────── Mac ────────────────────┐        ┌── Android device / AVD ──┐
-│                                              │        │                          │
-│  app/     Flutter desktop UI ────┐           │─ USB ──│ adb (screenrecord, input)│
-│                                  │           │        └──────────────────────────┘
-│  MCP client (Claude, …) ─────┐   │ HTTP + WS │
-│                              ▼   ▼           │        ┌──── iOS device / Sim ────┐
-│  engine/  Python device engine (uv)          │─ USB ──│ WebDriverAgent (XCUITest)│
-│    • unified Device abstraction              │        │ pymobiledevice3 / simctl │
-│    • FastAPI HTTP + WebSocket API (:8930)    │        │ devicectl (install)      │
-│    • FastMCP stdio server (AI agent tools)   │        └──────────────────────────┘
-│    • Android H.264 / iOS MJPEG stream relays │
-└──────────────────────────────────────────────┘
-```
-
-- **`engine/`** — Python (uv). Device backends: `adb` for Android, WebDriverAgent
-  + `pymobiledevice3` + `devicectl` for iPhones, `simctl` + WebDriverAgent for iOS
-  simulators. Exposes a local HTTP/WebSocket API *and* an MCP server over the same
-  device abstraction, and advertises itself via mDNS (`_openmob._tcp`).
-- **`app/`** — Flutter macOS desktop app: device list, live mirror, click-to-tap,
-  logs panel, Flutter run panel, and virtual-device create/launch.
-- **`runner/`** — on-device companions. iOS: a signed WebDriverAgent XCUITest
-  runner (Apple requires a signed runner for input injection). Android needs none.
-
-Deeper dive for contributors: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+---
 
 ## Platform support
 
-| Capability | Android device | Android AVD | iOS device | iOS simulator |
-|---|---|---|---|---|
-| Discovery | ✅ | ✅ | ✅ | ✅ |
-| Screen mirror | ✅ H.264 | ✅ H.264 | ✅ WDA MJPEG¹ | ✅ simctl² |
-| Tap / swipe / type / keys | ✅ | ✅ | ✅¹ | ✅ |
-| Install / launch / uninstall | ✅ | ✅ | ✅ (`devicectl`) | ✅ (`simctl`) |
-| App-scoped logs & tail | ✅ | ✅ | ✅ | ⚠️ not yet |
-| Crash reports | ✅ | ✅ | ✅ | ✅ |
-| Deep links / file transfer / info | ✅ | ✅ | ✅ | ✅ |
-| `clear_app_data` | ✅ | ✅ | ⛔ Apple limitation | ⛔ |
-| Flutter run + hot reload | ✅ | ✅ | ✅ (via `flutter run`) | ✅ |
-| lldb interactive debug | — | — | ⚠️ transport only³ | ✅ fully working |
-| Create virtual device | — | ✅ (`sdkmanager`/`avdmanager`) | — | ✅ (`simctl`) |
+| Capability | Android | iOS |
+| --- | --- | --- |
+| Mirror, tap, swipe, type, keys | ✅ | ✅ |
+| Install / launch / uninstall apps | ✅ | ✅ |
+| App-scoped logs | ✅ | ✅ device · ⚠️ simulator |
+| Crash reports | ✅ | ✅ |
+| Deep links, force-stop, file transfer | ✅ | ✅ |
+| Clear app data | ✅ | ⛔ (no iOS API) |
+| Flutter hot reload / DevTools | ✅ | ✅ |
+| Interactive lldb debugger | — | ✅ simulator · ⚙️ device (needs a tunnel) |
+| Create / launch virtual devices | ✅ AVDs | ✅ Simulators |
 
-¹ Physical iPhones need a WebDriverAgent runner built and installed once, plus a
-usbmux port forward — see [docs/IOS.md](docs/IOS.md). v0 targets the **first** iOS
-device only (single WDA URL).
-² iOS simulators mirror via `simctl` screenshots; input uses a per-simulator WDA
-instance built and started on first tap.
-³ Real-device lldb: the no-sudo tunnel transport is verified, but attaching to a
-running process for a live backtrace is **not yet wired end-to-end** — see
-[Roadmap & limitations](#roadmap--limitations) and [docs/DEBUGGING.md](docs/DEBUGGING.md).
+The engine runs on macOS. iOS control requires Xcode and the one-time WDA runner
+setup; real-device iOS debugging needs a developer tunnel (the app tells you the
+exact command).
 
-## How OpenMob compares
+---
 
-OpenMob is honest about where it sits. It is not a test framework and it is not a
-cloud device farm — it is a local, open device-control product plus an agent
-surface.
+## Build from source
 
-| | **OpenMob** | Appium | scrcpy | Paid device-control apps |
-|---|---|---|---|---|
-| What it is | Product + engine + agent API | Automation toolkit/protocol | Android mirror/control | Closed product |
-| Android + iOS | ✅ both | ✅ both | Android only | Usually both |
-| Desktop UI | ✅ | — | ✅ | ✅ |
-| AI-agent (MCP) surface | ✅ built-in | via 3rd-party wrappers | — | Varies |
-| Open source | ✅ MIT | ✅ | ✅ | ⛔ |
-| Cost | Free | Free | Free | Paid |
-
-OpenMob stands on the same free, permissively licensed primitives as the paid
-tools — `adb`, WebDriverAgent (BSD-3), `pymobiledevice3` — and keeps the product
-layer open too. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-
-## Development
-
-```
-OpenMob/
-├── engine/     Python device engine — CLI, HTTP/WS API, MCP server (uv)
-├── app/        Flutter macOS desktop app
-├── runner/     on-device companions (iOS WebDriverAgent runner + branding)
-├── scripts/    setup-wda.sh and the end-to-end release-gate harness
-├── testapp/    deterministic Flutter testbed used by the E2E gate
-└── docs/        API contract, iOS setup, dev tools, architecture
-```
-
-Engine:
+Requirements: **macOS 13+**, [uv](https://docs.astral.sh/uv/),
+[Flutter](https://flutter.dev) (for the app), the Android SDK/`adb`, and Xcode
+(for iOS). `ffmpeg` (`brew install ffmpeg`) enables the fast Android video
+stream.
 
 ```sh
-cd engine
-uv sync
-uv run openmob devices     # detected devices
-uv run openmob serve       # HTTP/WS API
-uv run openmob mcp         # MCP stdio server
-uv run pytest              # unit tests (no device needed)
-uv run ruff check .        # lint
+git clone https://github.com/ZevnixAi-Applications/OpenMob.git
+cd OpenMob
+
+# engine
+cd engine && uv run pytest && uv run openmob serve
+
+# app (in another terminal)
+cd app && flutter run -d macos
 ```
 
-App:
+See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for a full walkthrough and
+[CONTRIBUTING.md](CONTRIBUTING.md) to hack on it.
 
-```sh
-cd app
-flutter pub get
-flutter run -d macos       # needs the engine running
-flutter analyze
-flutter test
-```
+---
 
-Contributions welcome — see **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+## Roadmap
 
-## Roadmap & limitations
+- Notarized builds (no Gatekeeper prompt)
+- The OpenMob mobile app — control your devices from another phone
+- Fully-wired real-device iOS debugging
+- Session recording and record-and-replay
+- Multi-device split view and input sync
 
-Deliberately honest. OpenMob is **v0.1.0, early development.**
+---
 
-- **iOS real-device lldb attach isn't fully wired.** The no-sudo userspace tunnel
-  transport is verified, but `pymobiledevice3`'s `debugserver start-server` yields
-  an *unattached* debugserver, so the engine connects with `pid 0` and cannot yet
-  get a stopped process to backtrace. Simulator debugging is fully working.
-  Details in [docs/DEBUGGING.md](docs/DEBUGGING.md).
-- **iOS `clear_app_data` is unsupported** — Apple provides no per-app data-reset
-  API. Uninstall + reinstall instead.
-- **iOS control is first-device-only** (single WDA URL); multi-iPhone support is
-  future work. Multiple Android devices and multiple simulators already work.
-- **iOS Flutter VM-service auto-detection isn't implemented** — use `flutter_run`
-  (managed) or `flutter attach`.
-- **Simulator logs aren't implemented yet.**
-- **No auth** in v0 — the engine binds `127.0.0.1` by default. Only pass
-  `--host 0.0.0.0` on a trusted network.
-- **No team / multi-user / remote-farm mode** — OpenMob is single-machine, local.
-- **Host is macOS.** iOS features require Xcode; the engine leans on macOS tooling.
+## Docs
 
-## Documentation
+[Getting started](docs/GETTING_STARTED.md) ·
+[Architecture](docs/ARCHITECTURE.md) ·
+[Engine API](docs/API.md) ·
+[Developer tools](docs/DEVTOOLS.md) ·
+[Debugging](docs/DEBUGGING.md) ·
+[Virtual devices](docs/VIRTUAL_DEVICES.md) ·
+[iOS setup](docs/IOS.md)
 
-| Doc | What's in it |
-|---|---|
-| [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) | Onboarding: install, first device, app, CLI, MCP |
-| [docs/API.md](docs/API.md) | HTTP + WebSocket + MCP API contract |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the engine, backends, streaming, and app fit together |
-| [docs/DEVTOOLS.md](docs/DEVTOOLS.md) | Logs, crash reports, daily verbs, Flutter debugging |
-| [docs/DEBUGGING.md](docs/DEBUGGING.md) | Interactive iOS lldb sessions |
-| [docs/VIRTUAL_DEVICES.md](docs/VIRTUAL_DEVICES.md) | Listing, creating, and booting AVDs/simulators |
-| [docs/IOS.md](docs/IOS.md) | Physical-iPhone setup (WebDriverAgent + pymobiledevice3) |
+---
 
 ## License
 
-MIT © Zevnix AI. See [LICENSE](LICENSE) and [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-</content>
-</invoke>
+MIT — see [LICENSE](LICENSE). Contributions welcome.
+
+Made by Zevnix AI Pvt Ltd. © 2026.
