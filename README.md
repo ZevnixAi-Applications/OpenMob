@@ -200,7 +200,8 @@ See [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) for a full walkthrough an
 [Developer tools](docs/DEVTOOLS.md) ·
 [Debugging](docs/DEBUGGING.md) ·
 [Virtual devices](docs/VIRTUAL_DEVICES.md) ·
-[iOS setup](docs/IOS.md)
+[iOS setup](docs/IOS.md) ·
+[Windows](docs/WINDOWS.md)
 
 ---
 
