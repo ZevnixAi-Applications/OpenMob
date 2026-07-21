@@ -14,19 +14,37 @@ WDA. See docs/IOS.md for phone setup and the WDA endpoint reference.
 import asyncio
 import base64
 import binascii
+import concurrent.futures
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from pathlib import Path
+from typing import Any
 
 import httpx
 
 from openmob.device import Device, DeviceError
 from openmob.logstream import LogScope, LogStream, apply_filter
+
+def _run_coro(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Run a coroutine to completion from sync code, even under a running event loop.
+
+    `asyncio.run` raises RuntimeError when called on a thread that already has a
+    running loop — which is exactly how the MCP server invokes sync tools (FastMCP
+    calls them directly on the event loop thread). In that case run the coroutine
+    on a throwaway thread with its own loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
 
 DEFAULT_WDA_URL = "http://127.0.0.1:8100"
 DEFAULT_MJPEG_PORT = 9100
@@ -393,7 +411,7 @@ class IosDevice(Device):
                 await lockdown.close()
 
         try:
-            apps = asyncio.run(fetch())
+            apps = _run_coro(fetch())
         except Exception as exc:
             raise DeviceError(f"could not list apps on {self._udid}: {exc}") from exc
         return sorted(
@@ -545,7 +563,7 @@ class IosDevice(Device):
                 await lockdown.close()
 
         try:
-            return asyncio.run(fetch())
+            return _run_coro(fetch())
         except DeviceError:
             raise
         except Exception as exc:
@@ -582,7 +600,7 @@ def _lockdown_name(udid: str) -> str:
         return str(name or product or udid)
 
     try:
-        return asyncio.run(fetch())
+        return _run_coro(fetch())
     except Exception:
         return udid
 
@@ -596,7 +614,7 @@ def discover() -> list[IosDevice]:
         return await usbmux.list_devices()
 
     try:
-        muxed = asyncio.run(fetch())
+        muxed = _run_coro(fetch())
     except Exception:
         return []
     devices: list[IosDevice] = []

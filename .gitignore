@@ -27,3 +27,9 @@ app/ephemeral/
 
 # iOS runner (WDA clone + build artifacts)
 runner/ios/WebDriverAgent/
+
+# Testbed app artifacts
+testapp/build/
+testapp/.dart_tool/
+testapp/.flutter-plugins*
+testapp/ephemeral/
