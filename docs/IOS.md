@@ -230,6 +230,37 @@ session capability `settings` (`mjpegServerScreenshotQuality`, `mjpegServerFrame
 - **Old lockdown tools fail (`ideviceinstaller`, `ios-deploy`)** — expected on
   iOS 17+; use `devicectl` / `pymobiledevice3` instead.
 
+## Release-gate quirks (learned running the E2E gate on a real iPhone, 2026-07-21)
+
+- **Debug-mode Flutter apps cannot be launched standalone on iOS 14+** (home screen
+  or `devicectl process launch` shows a "can only be launched from Flutter tooling"
+  screen — the debug engine needs an attached host). Build the testbed in **release**
+  mode for gate runs: `flutter build ios --release --no-codesign`, then sign via
+  xcodebuild.
+- **`flutter build --no-codesign` + xcodebuild share `build/ios`**: a follow-up
+  `xcodebuild ... build` sees the unsigned products as up-to-date and skips the
+  signing step, leaving `build/ios/Debug-iphoneos/Runner.app` unsigned. Force it with
+  `CODE_SIGNING_ALLOWED=YES CODE_SIGN_STYLE=Automatic`, and note the **signed** app
+  lands in `~/Library/Developer/Xcode/DerivedData/Runner-*/Build/Products/
+  <Config>-iphoneos/Runner.app` — install *that* with
+  `xcrun devicectl device install app`.
+- **`devicectl process launch` works fine for normal apps** on iOS 26 — only XCTest
+  runner bundles (WDA) crash when launched that way (XCTRunnerDaemonSession); WDA
+  must be started through `xcodebuild test-without-building`.
+- **WDA screenshots are color-managed**: the testbed's pure colors come back slightly
+  off (pure red `#FF0000` arrives as `(253, 0, 2)` on an iPhone 12 P3 panel). Pixel
+  assertions must use a per-channel tolerance (the gate uses ±10 for PNG on iOS;
+  Android stays at ±8).
+- **`asyncio.run` under a running event loop** (fixed in `engine/src/openmob/ios.py`,
+  `_run_coro`): FastMCP invokes *sync* tool functions directly on the event loop
+  thread, so pymobiledevice3 discovery/`list_apps` calls that used `asyncio.run`
+  raised `RuntimeError` there — swallowed by `discover()`'s broad `except`, making
+  iOS devices silently disappear from the **MCP server only** (the FastAPI server
+  runs sync endpoints in a threadpool, so it was unaffected). `_run_coro` now falls
+  back to running the coroutine on a throwaway thread.
+- Gate reference numbers on the iPhone 12 (1170x2532 @3x): soak 40/40 clean; WS
+  stream ~80–91 frames per 20 s (~4–4.5 fps), max inter-frame gap ~0.36 s.
+
 ## Sources
 
 - pymobiledevice3 iOS 17+ tunnels guide — <https://github.com/doronz88/pymobiledevice3/blob/master/docs/guides/ios17-tunnels.md>
