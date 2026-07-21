@@ -79,6 +79,26 @@ The script clones `appium/WebDriverAgent` into `runner/ios/WebDriverAgent` (skip
 present), builds `WebDriverAgentRunner` for the connected device signed with team
 `76Z3N79K53`, and installs the runner app via `devicectl`.
 
+It also rebrands the runner's visible UI as OpenMob (home-screen label **OM
+Runner** — kept short so iOS does not truncate it):
+
+- copies `runner/ios/branding/icon-1024.png` (regenerable with
+  `uv run --with pillow python runner/ios/branding/make_icon.py <out.png>`) over
+  the Appium app icon in the runner's asset catalog;
+- copies `runner/ios/branding/LaunchImage.imageset` +
+  `LaunchBackground.colorset` (image regenerable with `make_launch.py`) into the
+  catalog and adds a `UILaunchScreen` dict (`UIColorName` = LaunchBackground,
+  `UIImageName` = LaunchImage) to the **built** bundle's Info.plist, giving a
+  branded dark screen when the app is opened by hand. During an active XCUITest
+  session the runner paints its own black window over it — expected;
+- sets `CFBundleDisplayName = OM Runner` in the source `Info.plist` and the built
+  bundle, then re-signs.
+
+This is display-layer only — `CFBundleName`, class names, and bundle structure
+are left untouched (changing `CFBundleName` breaks XCTest bundle loading).
+Upstream BSD-3-Clause attribution is kept in `THIRD_PARTY_LICENSES.md`; license
+headers in WDA source files are not removed.
+
 What it does, manually:
 
 ```sh
