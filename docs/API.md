@@ -78,9 +78,9 @@ simulator UDID). See `docs/VIRTUAL_DEVICES.md`.
 Server pushes binary JPEG frames (one WebSocket binary message per frame). Client sends nothing; close to stop.
 
 - **iOS**: frames are relayed from WDA's MJPEG screen stream (see docs/IOS.md), capped at ~15 fps; only the newest frame is sent, stale frames are dropped. If the MJPEG stream is unavailable, the server falls back to screenshot polling (~1 fps in practice).
-- **Android** (and the iOS fallback): screenshot-poll loop at up to ~8 fps.
+- **Android**: frames come from a low-latency H.264 video pipeline (`adb exec-out screenrecord --output-format=h264` decoded to JPEG by `ffmpeg`), relayed at up to ~20 fps while the screen is changing, newest frame only (stale frames are dropped). screenrecord only encodes on display updates, so an idle screen is refreshed via `screencap` about once per second; the first frame is also a `screencap` so clients render immediately. The pipeline restarts itself transparently around screenrecord's 180 s recording limit. If `ffmpeg` is missing or the device rejects `screenrecord`, the server falls back to `screencap` polling (~8 fps) transparently. Set `OPENMOB_ANDROID_STREAM=poll` to force the polling path (`video` is the default). Requires `ffmpeg` (Homebrew path or `PATH`).
 
-The wire contract is identical in all cases: binary JPEG messages, no metadata.
+The wire contract is identical in all cases: binary JPEG messages, no metadata. The `/screenshot` REST endpoint is unaffected: it always returns a full-resolution PNG.
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/logs/stream?filter=str`
 

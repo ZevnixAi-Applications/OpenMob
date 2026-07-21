@@ -7,6 +7,7 @@ import subprocess
 from functools import cache
 from pathlib import Path
 
+from openmob import videostream
 from openmob.device import Device, DeviceError
 from openmob.logstream import LogStream, apply_filter
 
@@ -202,6 +203,16 @@ class AndroidDevice(Device):
         if not png.startswith(b"\x89PNG"):
             raise DeviceError("screencap did not return a PNG")
         return png
+
+    def stream_frames(self) -> videostream.FrameStream:
+        """Stream JPEG frames of the live screen via a screenrecord+ffmpeg pipeline.
+
+        Yields the newest frame only (stale frames are dropped) and re-yields the
+        previous frame after ~1 s of no display updates. Call ``close()`` on the
+        returned stream to tear the pipeline down. Raises DeviceError if ffmpeg
+        is missing or the pipeline cannot produce frames.
+        """
+        return videostream.FrameStream(find_adb(), self._serial, self._screen_size())
 
     def tap(self, x: int, y: int) -> None:
         self._shell("input", "tap", str(x), str(y))
