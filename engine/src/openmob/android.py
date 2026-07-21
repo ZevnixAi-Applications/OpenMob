@@ -139,6 +139,37 @@ def parse_battery_level(output: str) -> int | None:
     return None
 
 
+# Matches `labelRes=0x... nonLocalizedLabel=<label> icon=0x... banner=0x...` lines in
+# `cmd package query-activities` / dumpsys output. Labels may contain spaces.
+_LABEL_RE = re.compile(r"nonLocalizedLabel=(.*?)(?=\s+icon=|\s+banner=|$)")
+
+
+def parse_launcher_labels(output: str) -> dict[str, str]:
+    """Parse `cmd package query-activities` dump output into {package: label}.
+
+    Labels come from `nonLocalizedLabel=` fields of the launcher ActivityInfo /
+    ApplicationInfo blocks. Entries whose label lives in a string resource show
+    `nonLocalizedLabel=null` and are skipped (best-effort resolution). The first
+    non-null label per package wins, which prefers the launcher activity's own
+    label over the application-wide one.
+    """
+    labels: dict[str, str] = {}
+    package = ""
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("packageName="):
+            package = line.removeprefix("packageName=").strip()
+            continue
+        if package and "nonLocalizedLabel=" in line:
+            match = _LABEL_RE.search(line)
+            if not match:
+                continue
+            label = match.group(1).strip()
+            if label and label != "null" and package not in labels:
+                labels[package] = label
+    return labels
+
+
 def parse_wm_size(output: str) -> tuple[int, int]:
     """Parse `adb shell wm size` output, preferring the override size."""
     sizes: dict[str, tuple[int, int]] = {}
@@ -157,6 +188,7 @@ class AndroidDevice(Device):
         self._name = name
         self._status = status
         self._size: tuple[int, int] | None = None
+        self._app_labels: dict[str, str] = {}
 
     def _run(self, *args: str, timeout: float = 30) -> bytes:
         cmd = [find_adb(), "-s", self._serial, *args]
@@ -244,7 +276,34 @@ class AndroidDevice(Device):
             for line in output.splitlines()
             if line.startswith("package:")
         )
-        return [{"package": package, "name": package} for package in packages]
+        labels = self._resolve_labels(packages)
+        return [{"package": package, "name": labels.get(package, package)} for package in packages]
+
+    def _resolve_labels(self, packages: list[str]) -> dict[str, str]:
+        """Best-effort friendly labels, cached per device; falls back to package id.
+
+        One batched `cmd package query-activities` call covers every launcher app;
+        packages it cannot name (resource-only labels, no launcher activity) are
+        cached as their package id so the query is not repeated for them.
+        """
+        if all(package in self._app_labels for package in packages):
+            return self._app_labels
+        try:
+            output = self._shell(
+                "cmd",
+                "package",
+                "query-activities",
+                "-a",
+                "android.intent.action.MAIN",
+                "-c",
+                "android.intent.category.LAUNCHER",
+            )
+        except DeviceError:
+            return self._app_labels
+        self._app_labels.update(parse_launcher_labels(output))
+        for package in packages:
+            self._app_labels.setdefault(package, package)
+        return self._app_labels
 
     def launch_app(self, package: str) -> None:
         output = self._shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")

@@ -4,11 +4,14 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/engine_client.dart';
+import '../services/engine_launcher.dart';
 
 class AppState extends ChangeNotifier {
   static const String defaultBaseUrl = 'http://127.0.0.1:8930';
   static const String _prefsKey = 'engine_base_url';
+  static const String _commandPrefsKey = 'engine_start_command';
   static const Duration _pollInterval = Duration(seconds: 5);
+  static const Duration _startTimeout = Duration(seconds: 30);
 
   EngineClient _client = EngineClient(defaultBaseUrl);
   Timer? _pollTimer;
@@ -30,6 +33,15 @@ class AppState extends ChangeNotifier {
   /// Most recent action/engine error, shown transiently in the UI.
   String? lastError;
 
+  /// Shell command used by "Start engine" (macOS only), persisted.
+  String engineCommand = '';
+
+  /// True while "Start engine" is launching and polling for health.
+  bool engineStarting = false;
+
+  /// Why the last "Start engine" attempt failed, if it did.
+  String? engineStartError;
+
   Device? get selectedDevice {
     for (final d in devices) {
       if (d.id == selectedDeviceId) return d;
@@ -43,8 +55,56 @@ class AppState extends ChangeNotifier {
     if (saved != null && saved.trim().isNotEmpty) {
       _client = EngineClient(saved);
     }
+    final savedCommand = prefs.getString(_commandPrefsKey);
+    engineCommand = (savedCommand != null && savedCommand.trim().isNotEmpty)
+        ? savedCommand
+        : EngineLauncher.defaultCommand();
     _pollTimer = Timer.periodic(_pollInterval, (_) => refresh());
     await refresh();
+  }
+
+  /// Persists the "Start engine" command; empty input restores the default.
+  Future<void> setEngineCommand(String command) async {
+    final trimmed = command.trim();
+    engineCommand = trimmed.isEmpty ? EngineLauncher.defaultCommand() : trimmed;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_commandPrefsKey, engineCommand);
+    _notify();
+  }
+
+  /// Launches the engine (macOS only) and waits for /health to come up.
+  Future<void> startEngine() async {
+    if (engineStarting || engineOnline || !EngineLauncher.isSupported) return;
+    engineStarting = true;
+    engineStartError = null;
+    _notify();
+    try {
+      await EngineLauncher.start(engineCommand);
+    } catch (e) {
+      engineStarting = false;
+      engineStartError = 'Could not launch `$engineCommand`: $e';
+      _notify();
+      return;
+    }
+    final deadline = DateTime.now().add(_startTimeout);
+    while (DateTime.now().isBefore(deadline) && !_disposed) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      try {
+        engineVersion = await _client.health();
+        engineOnline = true;
+        break;
+      } catch (_) {
+        // Not up yet; keep polling until the deadline.
+      }
+    }
+    engineStarting = false;
+    if (!engineOnline) {
+      engineStartError =
+          'Engine did not respond within ${_startTimeout.inSeconds}s. '
+          'Command tried: `$engineCommand` — check it in Engine settings.';
+    }
+    _notify();
+    if (engineOnline) await refresh();
   }
 
   Future<void> setBaseUrl(String url) async {

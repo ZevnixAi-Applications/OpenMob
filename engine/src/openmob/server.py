@@ -589,8 +589,27 @@ def create_app() -> FastAPI:
 app = create_app()
 
 
-def serve(port: int = PORT) -> None:
-    """Run the API server (blocking)."""
+def serve(port: int = PORT, host: str = HOST, mdns: bool = True) -> None:
+    """Run the API server (blocking), advertising it over mDNS unless disabled."""
     import uvicorn
 
-    uvicorn.run(app, host=HOST, port=port, log_level="info")
+    advertiser = None
+    if mdns:
+        from openmob.mdns import MdnsAdvertiser
+
+        advertiser = MdnsAdvertiser(port)
+        try:
+            advertiser.start()
+        except Exception:
+            # Advertising is best-effort; never prevent the API from serving.
+            advertiser = None
+        else:
+            # Unregister during graceful shutdown: uvicorn replays SIGTERM after
+            # run() returns, so cleanup after uvicorn.run would never execute.
+            app.router.on_shutdown.append(advertiser.stop)
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="info")
+    finally:
+        # Fallback for exits that skip the shutdown event; stop() is idempotent.
+        if advertiser is not None:
+            advertiser.stop()

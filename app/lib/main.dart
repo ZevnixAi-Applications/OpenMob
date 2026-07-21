@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'services/engine_launcher.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 import 'widgets/device_screen.dart';
+import 'widgets/engine_discovery_dialog.dart';
 import 'widgets/logs_panel.dart';
 import 'widgets/sidebar.dart';
 import 'widgets/toolbar.dart';
@@ -87,11 +89,7 @@ class _MainPane extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!state.engineOnline) {
-      return const _EmptyState(
-        icon: Icons.power_off_outlined,
-        title: 'Engine offline',
-        subtitle: 'Run `openmob serve` to start the engine.',
-      );
+      return _EngineOfflinePane(state: state);
     }
     if (state.devices.isEmpty) {
       return const _EmptyState(
@@ -137,6 +135,87 @@ class _MainPane extends StatelessWidget {
                 state.client.logsStreamUri(device.id, filter: filter),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _EngineOfflinePane extends StatelessWidget {
+  const _EngineOfflinePane({required this.state});
+
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 440),
+        padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 28),
+        decoration: BoxDecoration(
+          color: OM.card,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: OM.border),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.power_off_outlined, size: 34, color: OM.textMuted),
+            const SizedBox(height: 14),
+            const Text(
+              'Engine offline',
+              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              'Run `openmob serve` to start the engine.',
+              style: TextStyle(color: OM.textMuted, fontSize: 12),
+            ),
+            const SizedBox(height: 16),
+            if (state.engineStarting)
+              const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 10),
+                  Text('Starting engine…',
+                      style: TextStyle(color: OM.textMuted, fontSize: 12)),
+                ],
+              )
+            else
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                alignment: WrapAlignment.center,
+                children: [
+                  if (EngineLauncher.isSupported)
+                    FilledButton.icon(
+                      icon: const Icon(Icons.play_arrow, size: 16),
+                      label: const Text('Start engine',
+                          style: TextStyle(fontSize: 12)),
+                      onPressed: state.startEngine,
+                    ),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.wifi_find_outlined, size: 16),
+                    label: const Text('Find engines on my network',
+                        style: TextStyle(fontSize: 12)),
+                    onPressed: () => showEngineDiscoveryDialog(context),
+                  ),
+                ],
+              ),
+            if (state.engineStartError != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                state.engineStartError!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: OM.danger, fontSize: 11),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
