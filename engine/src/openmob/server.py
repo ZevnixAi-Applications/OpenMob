@@ -12,6 +12,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from openmob import __version__
+from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, SessionNotFound
 from openmob.device import Device, DeviceError
 from openmob.manager import DeviceManager, DeviceNotFound
 
@@ -22,6 +23,7 @@ STREAM_FPS = 8
 JPEG_QUALITY = 70
 
 manager = DeviceManager()
+debug_manager = DebugSessionManager()
 router = APIRouter(prefix="/api/v1")
 
 
@@ -135,6 +137,99 @@ def launch(device_id: str, body: PackageBody) -> dict[str, bool]:
     return {"ok": True}
 
 
+# --- interactive debugger (see docs/DEBUGGING.md) ---------------------------
+
+
+class DebugSessionBody(BaseModel):
+    device_id: str
+    pid: int | None = None
+    bundle_id: str | None = None
+    breakpoints: list[str] = []
+    debugserver_url: str | None = None
+
+
+class BreakpointBody(BaseModel):
+    spec: str
+
+
+class StepBody(BaseModel):
+    kind: str  # in | over | out
+
+
+class EvalBody(BaseModel):
+    expr: str
+    frame_id: int | None = None
+
+
+@router.post("/debug/sessions")
+def debug_create(body: DebugSessionBody) -> dict:
+    session, attach = debug_manager.create(
+        device_id=body.device_id,
+        pid=body.pid,
+        bundle_id=body.bundle_id,
+        breakpoints=body.breakpoints,
+        debugserver_url=body.debugserver_url,
+    )
+    return {**session.info(), "attach": attach}
+
+
+@router.get("/debug/sessions")
+def debug_list() -> list[dict]:
+    return debug_manager.list()
+
+
+@router.get("/debug/sessions/{session_id}/state")
+def debug_state(
+    session_id: str, stack: bool = True, vars: bool = True, threads: bool = False
+) -> dict:
+    return debug_manager.get(session_id).state(stack=stack, variables=vars, threads=threads)
+
+
+@router.post("/debug/sessions/{session_id}/breakpoints")
+def debug_breakpoint_add(session_id: str, body: BreakpointBody) -> dict:
+    return debug_manager.get(session_id).breakpoint_set(body.spec)
+
+
+@router.get("/debug/sessions/{session_id}/breakpoints")
+def debug_breakpoint_list(session_id: str) -> list[dict]:
+    return debug_manager.get(session_id).breakpoint_list()
+
+
+@router.delete("/debug/sessions/{session_id}/breakpoints/{bp_id}")
+def debug_breakpoint_delete(session_id: str, bp_id: int) -> dict:
+    return debug_manager.get(session_id).breakpoint_delete(bp_id)
+
+
+@router.post("/debug/sessions/{session_id}/continue")
+def debug_continue(session_id: str) -> dict:
+    return debug_manager.get(session_id).cont()
+
+
+@router.post("/debug/sessions/{session_id}/pause")
+def debug_pause(session_id: str) -> dict:
+    return debug_manager.get(session_id).pause()
+
+
+@router.post("/debug/sessions/{session_id}/step")
+def debug_step(session_id: str, body: StepBody) -> dict:
+    return debug_manager.get(session_id).step(body.kind)
+
+
+@router.post("/debug/sessions/{session_id}/eval")
+def debug_eval(session_id: str, body: EvalBody) -> dict:
+    return debug_manager.get(session_id).eval(body.expr, body.frame_id)
+
+
+@router.get("/debug/sessions/{session_id}/output")
+def debug_output(session_id: str) -> list[dict]:
+    return debug_manager.get(session_id).output()
+
+
+@router.delete("/debug/sessions/{session_id}")
+def debug_detach(session_id: str, kill: bool = False) -> dict:
+    return debug_manager.remove(session_id, kill=kill)
+
+
 @router.websocket("/devices/{device_id}/stream")
 async def stream(websocket: WebSocket, device_id: str) -> None:
     """Push binary JPEG frames until the client disconnects."""
@@ -176,6 +271,25 @@ def create_app() -> FastAPI:
     @app.exception_handler(DeviceError)
     async def _device_error(request: Request, exc: DeviceError) -> JSONResponse:
         return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @app.exception_handler(SessionNotFound)
+    async def _session_not_found(request: Request, exc: SessionNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(CapabilityError)
+    async def _capability_error(request: Request, exc: CapabilityError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": str(exc),
+                "error": "capability_missing",
+                "commands": exc.commands,
+            },
+        )
+
+    @app.exception_handler(DebugError)
+    async def _debug_error(request: Request, exc: DebugError) -> JSONResponse:
+        return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     @app.exception_handler(NotImplementedError)
     async def _not_implemented(request: Request, exc: NotImplementedError) -> JSONResponse:
