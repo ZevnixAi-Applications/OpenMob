@@ -35,7 +35,12 @@ class FakeVmServiceWs:
         if request["method"] == "getVM":
             reply["result"] = {"type": "VM", "isolates": self.isolates}
         elif request["method"] == "reloadSources":
-            reply["result"] = {"type": "ReloadReport", "success": self.reload_success}
+            report: dict = {"type": "ReloadReport", "success": self.reload_success}
+            if not self.reload_success:
+                report["notices"] = [
+                    {"type": "ReasonForCancelling", "message": "Error while starting Kernel task"}
+                ]
+            reply["result"] = report
         else:
             reply["error"] = {"code": -32601, "message": "Method not found"}
         return reply
@@ -77,6 +82,7 @@ def test_hot_reload_reports_failure() -> None:
     ws = FakeVmServiceWs(isolates=[{"id": "isolates/1", "name": "main"}], reload_success=False)
     result = asyncio.run(hot_reload_over_ws(ws))
     assert result["success"] is False
+    assert result["isolates"][0]["reason"] == "Error while starting Kernel task"
 
 
 def test_hot_reload_no_isolates() -> None:

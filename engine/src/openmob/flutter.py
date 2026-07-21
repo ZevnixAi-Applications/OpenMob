@@ -108,12 +108,20 @@ async def hot_reload_over_ws(ws) -> dict[str, object]:
     reports = []
     for ref in isolates:
         report = await rpc.call("reloadSources", {"isolateId": ref["id"]})
-        reports.append(
-            {
-                "isolate": ref.get("name", ref["id"]),
-                "success": bool(report.get("success")),
-            }
-        )
+        entry: dict[str, object] = {
+            "isolate": ref.get("name", ref["id"]),
+            "success": bool(report.get("success")),
+        }
+        # Surface the VM's reason on failure (e.g. no kernel compiler when the app was
+        # launched from an installed APK instead of `flutter run`).
+        notices = [
+            notice["message"]
+            for notice in report.get("notices", [])
+            if isinstance(notice, dict) and notice.get("message")
+        ]
+        if notices and not entry["success"]:
+            entry["reason"] = "; ".join(notices)
+        reports.append(entry)
     return {
         "success": all(report["success"] for report in reports),
         "isolates": reports,
