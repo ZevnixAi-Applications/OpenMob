@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../api/engine_client.dart';
+import '../services/engine_launcher.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import 'engine_discovery_dialog.dart';
 
 class Sidebar extends StatelessWidget {
   const Sidebar({super.key});
@@ -140,43 +142,120 @@ class _EngineHeader extends StatelessWidget {
   }
 
   Future<void> _showSettings(BuildContext context) async {
-    final state = context.read<AppState>();
-    final controller = TextEditingController(text: state.baseUrl);
-    final result = await showDialog<String>(
+    await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Engine settings',
-            style: TextStyle(fontSize: 16)),
-        content: SizedBox(
-          width: 360,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            style: const TextStyle(fontSize: 13),
-            decoration: const InputDecoration(
-              labelText: 'Engine base URL',
-              hintText: AppState.defaultBaseUrl,
-              border: OutlineInputBorder(),
-            ),
-            onSubmitted: (v) => Navigator.of(context).pop(v),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
+      builder: (context) => const _SettingsDialog(),
     );
-    controller.dispose();
-    if (result != null && result.trim().isNotEmpty) {
-      await state.setBaseUrl(result);
+  }
+}
+
+class _SettingsDialog extends StatefulWidget {
+  const _SettingsDialog();
+
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  late final TextEditingController _urlController;
+  late final TextEditingController _commandController;
+
+  @override
+  void initState() {
+    super.initState();
+    final state = context.read<AppState>();
+    _urlController = TextEditingController(text: state.baseUrl);
+    _commandController = TextEditingController(text: state.engineCommand);
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _commandController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _findEngines() async {
+    final url = await showDialog<String>(
+      context: context,
+      builder: (context) => const EngineDiscoveryDialog(),
+    );
+    if (url != null && url.isNotEmpty) {
+      _urlController.text = url;
     }
+  }
+
+  Future<void> _save() async {
+    final state = context.read<AppState>();
+    Navigator.of(context).pop();
+    if (EngineLauncher.isSupported) {
+      await state.setEngineCommand(_commandController.text);
+    }
+    final url = _urlController.text.trim();
+    if (url.isNotEmpty && url != state.baseUrl) {
+      await state.setBaseUrl(url);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Engine settings', style: TextStyle(fontSize: 16)),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _urlController,
+              autofocus: true,
+              style: const TextStyle(fontSize: 13),
+              decoration: const InputDecoration(
+                labelText: 'Engine base URL',
+                hintText: AppState.defaultBaseUrl,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _save(),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                icon: const Icon(Icons.wifi_find_outlined, size: 16),
+                label: const Text('Find engines on my network',
+                    style: TextStyle(fontSize: 12)),
+                onPressed: _findEngines,
+              ),
+            ),
+            if (EngineLauncher.isSupported) ...[
+              const SizedBox(height: 16),
+              TextField(
+                controller: _commandController,
+                style: const TextStyle(fontSize: 13),
+                decoration: const InputDecoration(
+                  labelText: 'Start engine command',
+                  helperText:
+                      'Used by the "Start engine" button. Leave empty to reset.',
+                  helperStyle: TextStyle(fontSize: 11, color: OM.textMuted),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _save,
+          child: const Text('Save'),
+        ),
+      ],
+    );
   }
 }
 
