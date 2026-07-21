@@ -261,10 +261,51 @@ def list_virtual_devices() -> list[dict[str, str | None]]:
 
 
 @mcp.tool()
-def launch_virtual_device(name: str) -> str:
-    """Boot a virtual device by name; it then appears in list_devices once online."""
-    result = virtual.launch(name)
+def launch_virtual_device(name: str, windowed: bool = False) -> str:
+    """Boot a virtual device by name; it then appears in list_devices once online.
+
+    Boots headless by default (no native emulator/Simulator window) so it is
+    mirrored inside OpenMob; pass windowed=True to also open the platform's window.
+    """
+    result = virtual.launch(name, windowed=windowed)
     return str(result.get("note", "ok"))
+
+
+@mcp.tool()
+def get_create_options() -> dict:
+    """Installable images and hardware profiles for creating new virtual devices.
+
+    Returns {"android": {device_profiles, system_images}, "ios": {device_types, runtimes}};
+    each section has an `available` flag and a `reason` when the tooling is missing.
+    """
+    return virtual.create_options()
+
+
+@mcp.tool()
+def create_virtual_device(
+    platform: str,
+    name: str,
+    device_profile: str | None = None,
+    system_image: str | None = None,
+    device_type: str | None = None,
+    runtime: str | None = None,
+) -> dict:
+    """Create a new AVD (platform="android") or iOS simulator (platform="ios").
+
+    Android needs device_profile (e.g. "pixel_7") and system_image (e.g.
+    "system-images;android-35;google_apis;arm64-v8a"); an uninstalled image is
+    downloaded first, so a job id is returned — poll GET
+    /virtual-devices/create/jobs/{id} for progress. iOS needs device_type and
+    runtime identifiers (from get_create_options) and completes quickly.
+    """
+    return virtual.create_virtual_device(
+        platform=platform,
+        name=name,
+        device_profile=device_profile,
+        system_image=system_image,
+        device_type=device_type,
+        runtime=runtime,
+    )
 
 
 def run() -> None:

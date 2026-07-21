@@ -222,3 +222,46 @@ def test_logs_stream_ws_all_lines(client: TestClient, fake_device: FakeDevice) -
         assert ws.receive_text() == "line one"
         assert ws.receive_text() == "boom happened"
         assert ws.receive_text() == "line three"
+
+
+def test_create_options_route(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "android": {"available": True, "reason": None, "device_profiles": [], "system_images": []},
+        "ios": {"available": True, "reason": None, "device_types": [], "runtimes": []},
+    }
+    monkeypatch.setattr(server.virtual, "create_options", lambda: payload)
+    response = client.get("/api/v1/virtual-devices/create-options")
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+def test_create_route_starts_job(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict = {}
+
+    def fake_create(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {"id": "job-1", "status": "queued", "platform": "ios", "name": "My iPhone"}
+
+    monkeypatch.setattr(server.virtual, "create_virtual_device", fake_create)
+    response = client.post(
+        "/api/v1/virtual-devices/create",
+        json={"platform": "ios", "name": "My iPhone", "device_type": "dt", "runtime": "rt"},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == "job-1"
+    assert captured["platform"] == "ios" and captured["name"] == "My iPhone"
+
+
+def test_create_job_route_404(client: TestClient) -> None:
+    response = client.get("/api/v1/virtual-devices/create/jobs/nope")
+    assert response.status_code == 404
+
+
+def test_create_validation_error_maps_to_502(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = client.post(
+        "/api/v1/virtual-devices/create", json={"platform": "symbian", "name": "x"}
+    )
+    assert response.status_code == 502  # DeviceError handler
+    assert "unknown platform" in response.json()["detail"]

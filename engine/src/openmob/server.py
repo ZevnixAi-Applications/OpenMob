@@ -22,7 +22,7 @@ from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, S
 from openmob.device import Device, DeviceError
 from openmob.logstream import matches_filter
 from openmob.manager import DeviceManager, DeviceNotFound
-from openmob.virtual import VirtualDeviceNotFound
+from openmob.virtual import CreateJobNotFound, VirtualDeviceNotFound
 
 HOST = "127.0.0.1"
 PORT = 8930
@@ -92,6 +92,18 @@ class PullBody(BaseModel):
 
 class VirtualDeviceBody(BaseModel):
     name: str
+    # Headless by default so the device mirrors inside OpenMob; opt in to the
+    # native emulator/Simulator window with windowed=true.
+    windowed: bool = False
+
+
+class CreateVirtualDeviceBody(BaseModel):
+    platform: str
+    name: str
+    device_profile: str | None = None
+    system_image: str | None = None
+    device_type: str | None = None
+    runtime: str | None = None
 
 
 def device_info(device: Device) -> dict[str, str | int]:
@@ -385,7 +397,29 @@ def list_virtual_devices() -> list[dict[str, str | None]]:
 
 @router.post("/virtual-devices/launch")
 def launch_virtual_device(body: VirtualDeviceBody) -> dict[str, bool | str]:
-    return virtual.launch(body.name)
+    return virtual.launch(body.name, windowed=body.windowed)
+
+
+@router.get("/virtual-devices/create-options")
+def virtual_create_options() -> dict[str, dict]:
+    return virtual.create_options()
+
+
+@router.post("/virtual-devices/create")
+def create_virtual_device(body: CreateVirtualDeviceBody) -> dict:
+    return virtual.create_virtual_device(
+        platform=body.platform,
+        name=body.name,
+        device_profile=body.device_profile,
+        system_image=body.system_image,
+        device_type=body.device_type,
+        runtime=body.runtime,
+    )
+
+
+@router.get("/virtual-devices/create/jobs/{job_id}")
+def virtual_create_job(job_id: str) -> dict:
+    return virtual.get_create_job(job_id)
 
 
 @router.websocket("/devices/{device_id}/stream")
@@ -554,6 +588,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(VirtualDeviceNotFound)
     async def _virtual_not_found(request: Request, exc: VirtualDeviceNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(CreateJobNotFound)
+    async def _create_job_not_found(request: Request, exc: CreateJobNotFound) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     @app.exception_handler(DeviceError)
