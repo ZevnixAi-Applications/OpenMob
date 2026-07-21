@@ -2,23 +2,27 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../theme.dart';
 
-/// Live device screen: renders binary JPEG frames from the engine's
-/// WebSocket stream and maps taps/drags back to device pixel coordinates.
+/// Live device screen: renders frames from an [EngineClient.frames] stream
+/// and maps taps/drags back to device pixel coordinates.
+///
+/// The widget reconnects by re-invoking [connectFrames] when the stream errors
+/// or closes. Callers must key this widget by engine + device so switching
+/// devices recreates the state (and thus the stream).
 class DeviceScreen extends StatefulWidget {
   const DeviceScreen({
     super.key,
-    required this.streamUri,
+    required this.connectFrames,
     required this.deviceWidth,
     required this.deviceHeight,
     required this.onTapAt,
     required this.onSwipe,
   });
 
-  final Uri streamUri;
+  /// Opens a new frame stream (one Uint8List of image bytes per frame).
+  final Stream<Uint8List> Function() connectFrames;
   final int deviceWidth;
   final int deviceHeight;
   final void Function(int x, int y) onTapAt;
@@ -30,8 +34,7 @@ class DeviceScreen extends StatefulWidget {
 }
 
 class _DeviceScreenState extends State<DeviceScreen> {
-  WebSocketChannel? _channel;
-  StreamSubscription<dynamic>? _sub;
+  StreamSubscription<Uint8List>? _sub;
   Timer? _reconnectTimer;
   Uint8List? _frame;
   bool _connected = false;
@@ -47,31 +50,16 @@ class _DeviceScreenState extends State<DeviceScreen> {
     _connect();
   }
 
-  @override
-  void didUpdateWidget(DeviceScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.streamUri != widget.streamUri) {
-      _disconnect();
-      _connect();
-    }
-  }
-
   void _connect() {
     _reconnectTimer?.cancel();
     try {
-      final channel = WebSocketChannel.connect(widget.streamUri);
-      _channel = channel;
-      _sub = channel.stream.listen(
-        (message) {
+      _sub = widget.connectFrames().listen(
+        (frame) {
           if (!mounted) return;
-          if (message is List<int>) {
-            setState(() {
-              _frame = message is Uint8List
-                  ? message
-                  : Uint8List.fromList(message);
-              _connected = true;
-            });
-          }
+          setState(() {
+            _frame = frame;
+            _connected = true;
+          });
         },
         onError: (Object _) => _scheduleReconnect(),
         onDone: _scheduleReconnect,
@@ -95,8 +83,6 @@ class _DeviceScreenState extends State<DeviceScreen> {
     _reconnectTimer?.cancel();
     _sub?.cancel();
     _sub = null;
-    _channel?.sink.close();
-    _channel = null;
     _frame = null;
     _connected = false;
   }

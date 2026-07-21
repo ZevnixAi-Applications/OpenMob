@@ -33,15 +33,10 @@ class _DeviceToolbarState extends State<DeviceToolbar> {
     final state = context.watch<AppState>();
     final enabled = state.selectedDevice?.online ?? false;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: const BoxDecoration(
-        color: OM.sidebar,
-        border: Border(top: BorderSide(color: OM.border)),
-      ),
-      child: Row(
-        children: [
-          _KeyButton(
+    final keyButtons = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _KeyButton(
             icon: Icons.arrow_back,
             label: 'Back',
             enabled: enabled,
@@ -71,10 +66,14 @@ class _DeviceToolbarState extends State<DeviceToolbar> {
             enabled: enabled,
             onPressed: () => state.pressKey('volume_up'),
           ),
-          const SizedBox(width: 14),
+      ],
+    );
+
+    final textInput = Row(
+      children: [
           Expanded(
             child: SizedBox(
-              height: 32,
+              height: 36,
               child: TextField(
                 controller: _textController,
                 enabled: enabled,
@@ -115,7 +114,40 @@ class _DeviceToolbarState extends State<DeviceToolbar> {
               visualDensity: VisualDensity.compact,
             ),
           ),
-        ],
+      ],
+    );
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: const BoxDecoration(
+        color: OM.sidebar,
+        border: Border(top: BorderSide(color: OM.border)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Wide (desktop): keys + text field on one row.
+            // Narrow (phones): keys row above the text row.
+            if (constraints.maxWidth >= 480) {
+              return Row(
+                children: [
+                  keyButtons,
+                  const SizedBox(width: 14),
+                  Expanded(child: textInput),
+                ],
+              );
+            }
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(child: keyButtons),
+                const SizedBox(height: 10),
+                textInput,
+              ],
+            );
+          },
+        ),
       ),
     );
   }
