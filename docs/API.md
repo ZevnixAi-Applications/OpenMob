@@ -20,8 +20,14 @@ The engine serves a local HTTP + WebSocket API for UIs, and an MCP server for AI
 | POST | `/devices/{id}/uninstall` | `{"package":"com.example.app"}` |
 | GET | `/devices/{id}/apps` | `[{"package","name"}]` |
 | POST | `/devices/{id}/launch` | `{"package":"com.example.app"}` |
+| GET | `/virtual-devices` | `[{"name","platform":"android"\|"ios","kind":"avd"\|"simulator","state":"running"\|"stopped","device_id":str\|null}]` |
+| POST | `/virtual-devices/launch` | `{"name":"Pixel_7"}` â†’ `{"ok":true,"note":"booting"\|"already running"}` (idempotent) |
 
 All action endpoints return `{"ok":true}` or HTTP 4xx/5xx with `{"detail":"..."}`.
+
+Virtual devices are Android AVDs and iOS Simulators defined on this machine; once
+booted they appear in `/devices` like any other device (`device_id` is the adb serial /
+simulator UDID). See `docs/VIRTUAL_DEVICES.md`.
 
 ## WebSocket
 
@@ -31,7 +37,7 @@ Server pushes binary JPEG frames (one WebSocket binary message per frame) at ~5â
 
 ## MCP server
 
-`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`.
+`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`, `list_virtual_devices`, `launch_virtual_device`.
 
 ## CLI
 
