@@ -23,10 +23,14 @@ from pathlib import Path
 import httpx
 
 from openmob.device import DeviceError
-from openmob.ios import IosDevice, WdaClient, parse_png_size
+from openmob.ios import IosDevice, WdaClient, ios_process_name, parse_png_size
+from openmob.logstream import LogScope, LogStream, apply_filter
 from openmob.virtual import list_simulators
 
 SIM_WDA_BASE_PORT = 8101
+
+# Snapshot window for `log show` (the simulator has no line-addressable ring buffer).
+SIM_LOG_SNAPSHOT_WINDOW = "30s"
 
 _BUILD_TIMEOUT = 600
 _BOOT_TIMEOUT = 120
@@ -162,6 +166,56 @@ class SimWdaRegistry:
                 process.terminate()
 
 
+def sim_log_predicate(scope: LogScope | None) -> str | None:
+    """Build a `log` NSPredicate scoping to one app, or None for an unscoped tail.
+
+    A simulator's unified log filters on the process, not a bundle id: `pid` maps to
+    `processID`, and a `package` maps to the app's process name (guessed from the bundle
+    id's last component — the CFBundleExecutable for most apps). `foreground` scoping is
+    not available on the simulator, and a wrong process-name guess simply yields no
+    lines, so callers can fall back to an unscoped tail.
+    """
+    if scope is None:
+        return None
+    if scope.pid is not None:
+        return f"processID == {scope.pid}"
+    if scope.package:
+        return f'process == "{ios_process_name(scope.package)}"'
+    return None
+
+
+def build_sim_log_show_args(udid: str, window: str, predicate: str | None) -> list[str]:
+    """simctl args for a snapshot: the last `window` of unified log, compact style."""
+    args = ["spawn", udid, "log", "show", "--last", window, "--style", "compact"]
+    if predicate:
+        args += ["--predicate", predicate]
+    return args
+
+
+def build_sim_log_stream_args(udid: str, predicate: str | None) -> list[str]:
+    """simctl args for a live tail of the unified log (debug level, compact style)."""
+    args = ["spawn", udid, "log", "stream", "--level", "debug", "--style", "compact"]
+    if predicate:
+        args += ["--predicate", predicate]
+    return args
+
+
+def parse_sim_log(output: str) -> str:
+    """Drop `log show`'s preamble (the "Filtering the log data…" notice and the column
+    header) so only actual log entries remain."""
+    kept = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("Filtering the log data"):
+            continue
+        if stripped.startswith("Timestamp"):  # the column header (real entries start with a date)
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 registry = SimWdaRegistry()
 
 
@@ -245,8 +299,31 @@ class IosSimDevice(IosDevice):
     def launch_app(self, package: str) -> None:
         self._simctl("launch", self.id, package, timeout=60)
 
-    def logs(self) -> str:
-        raise DeviceError("simulator log capture is not supported yet")
+    def logs(
+        self,
+        lines: int = 200,
+        filter_str: str | None = None,
+        scope: LogScope | None = None,
+    ) -> str:
+        """Snapshot the simulator's unified log via `simctl spawn <udid> log show`.
+
+        A `package`/`pid` scope becomes a `log` predicate so only the target app's
+        entries come back (see `sim_log_predicate` for the process-name caveat).
+        """
+        args = build_sim_log_show_args(
+            self.id, SIM_LOG_SNAPSHOT_WINDOW, sim_log_predicate(scope)
+        )
+        output = self._simctl(*args, timeout=60).decode(errors="replace")
+        return apply_filter(parse_sim_log(output), filter_str, lines)
+
+    def stream_logs(self, scope: LogScope | None = None) -> LogStream:
+        """Live-tail the simulator's unified log via `simctl spawn <udid> log stream`.
+
+        The `log stream` predicate follows the app across restarts on its own (it filters
+        by process, not pid), so no pid re-resolution is needed.
+        """
+        cmd = ["xcrun", "simctl", *build_sim_log_stream_args(self.id, sim_log_predicate(scope))]
+        return LogStream(cmd)
 
     def _simctl(self, *args: str, timeout: float = _SIMCTL_TIMEOUT) -> bytes:
         cmd = ["xcrun", "simctl", *args]

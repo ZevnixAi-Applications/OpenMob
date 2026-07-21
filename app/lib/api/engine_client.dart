@@ -161,6 +161,22 @@ class AndroidCreateOptions {
   }
 }
 
+/// An installed third-party app as reported by GET /devices/{id}/apps.
+class AppInfo {
+  const AppInfo({required this.package, required this.name});
+
+  final String package;
+  final String name;
+
+  factory AppInfo.fromJson(Map<String, dynamic> json) {
+    final package = json['package'] as String? ?? '';
+    return AppInfo(
+      package: package,
+      name: json['name'] as String? ?? package,
+    );
+  }
+}
+
 /// iOS creation options: device types + runtimes (or why unavailable).
 class IosCreateOptions {
   const IosCreateOptions({
@@ -278,14 +294,41 @@ class EngineClient {
   }
 
   /// WebSocket URI for the live log stream of [deviceId].
-  Uri logsStreamUri(String deviceId, {String? filter}) {
+  ///
+  /// Scope the tail to one app with [package] (its live process, followed across
+  /// restarts) or [scope] = 'foreground' (auto-target the foreground app). [flutter]
+  /// narrows to Flutter output. With none set, the whole device is tailed.
+  Uri logsStreamUri(
+    String deviceId, {
+    String? filter,
+    String? package,
+    String? scope,
+    bool flutter = false,
+  }) {
     final u = Uri.parse(baseUrl);
+    final params = <String, String>{
+      if (filter != null && filter.isNotEmpty) 'filter': filter,
+      if (package != null && package.isNotEmpty) 'package': package,
+      if (scope != null && scope.isNotEmpty) 'scope': scope,
+      if (flutter) 'flutter': 'true',
+    };
     return u.replace(
       scheme: u.scheme == 'https' ? 'wss' : 'ws',
       path: '/api/v1/devices/$deviceId/logs/stream',
-      queryParameters:
-          (filter == null || filter.isEmpty) ? null : {'filter': filter},
+      queryParameters: params.isEmpty ? null : params,
     );
+  }
+
+  /// Installed third-party apps on [deviceId] (for the logs scope selector).
+  Future<List<AppInfo>> apps(String deviceId) async {
+    final res = await http.get(_api('/devices/$deviceId/apps')).timeout(_timeout);
+    if (res.statusCode != 200) {
+      throw EngineException('apps returned ${res.statusCode}');
+    }
+    final body = jsonDecode(res.body) as List<dynamic>;
+    return body
+        .map((e) => AppInfo.fromJson(e as Map<String, dynamic>))
+        .toList();
   }
 
   /// Returns the engine version, or throws if the engine is unreachable.

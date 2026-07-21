@@ -9,7 +9,7 @@ from pathlib import Path
 
 from openmob import videostream
 from openmob.device import Device, DeviceError
-from openmob.logstream import LogStream, apply_filter
+from openmob.logstream import LogScope, LogStream, ScopedLogStream, apply_filter
 
 KEYCODES: dict[str, int] = {
     "home": 3,
@@ -180,6 +180,99 @@ def parse_wm_size(output: str) -> tuple[int, int]:
     raise DeviceError(f"could not parse wm size output: {output!r}")
 
 
+def parse_pidof(output: str) -> list[int]:
+    """Parse `adb shell pidof <package>` output into pids.
+
+    `pidof` prints the matching pids space-separated on one line, or nothing when the
+    process is not running (it also exits non-zero in that case, so callers must not
+    treat a non-zero exit as an error). A process with multiple instances (e.g. an app
+    with an ``:isolated`` sub-process) yields several pids.
+    """
+    return [int(token) for token in output.split() if token.isdigit()]
+
+
+# Foreground activity lines vary by Android version:
+#   mResumedActivity: ActivityRecord{hash u0 com.pkg/.Main t42}
+#   ResumedActivity: ActivityRecord{hash u0 com.pkg/.Main t42}
+#   topResumedActivity=ActivityRecord{hash u0 com.pkg/.Main t42}
+# The package is the token before the '/' that follows the `u<user>` field.
+_FOREGROUND_RE = re.compile(
+    r"(?:mResumedActivity|ResumedActivity|topResumedActivity|mFocusedActivity)"
+    r"[=:].*?\bu\d+\s+([A-Za-z][\w.]+)/"
+)
+
+
+def parse_foreground_package(output: str) -> str | None:
+    """Return the foreground app's package from `dumpsys activity activities` output."""
+    match = _FOREGROUND_RE.search(output)
+    return match.group(1) if match else None
+
+
+# `logcat` threadtime format: `MM-DD HH:MM:SS.mmm  PID  TID  L TAG: message`.
+_LOGCAT_PID_RE = re.compile(r"^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+\s+(\d+)\s+\d+\s")
+
+
+def parse_logcat_pid(line: str) -> int | None:
+    """Extract the pid column from a threadtime-format logcat line, or None."""
+    match = _LOGCAT_PID_RE.match(line)
+    return int(match.group(1)) if match else None
+
+
+def filter_lines_by_pids(text: str, pids: list[int], lines: int | None = None) -> str:
+    """Keep logcat lines whose pid column is in `pids` (old-device `--pid` fallback)."""
+    wanted = set(pids)
+    kept = [line for line in text.splitlines() if parse_logcat_pid(line) in wanted]
+    if lines is not None and lines > 0:
+        kept = kept[-lines:]
+    return "\n".join(kept)
+
+
+def build_logcat_args(
+    pids: list[int],
+    *,
+    tail: int | None = None,
+    flutter: bool = False,
+    modern: bool = True,
+) -> list[str]:
+    """Build the `logcat` argument list for a snapshot or a live tail.
+
+    `tail=N` dumps the last N lines (snapshot); `tail=None` follows from now (`-T 1`,
+    no buffer replay). On modern devices (Android 7+) each pid becomes a `--pid=<pid>`
+    filter; older devices ignore pids here and grep the pid column afterwards. `flutter`
+    appends the `flutter:V *:S` filterspec, keeping only Flutter framework output.
+    """
+    args = ["logcat"]
+    if tail is not None:
+        args += ["-d", "-t", str(tail)]
+    else:
+        args += ["-T", "1"]
+    if modern:
+        args += [f"--pid={pid}" for pid in pids]
+    if flutter:
+        args += ["flutter:V", "*:S"]
+    return args
+
+
+class _PidFilteredLogStream(LogStream):
+    """LogStream that drops lines whose pid column is not in `pids`.
+
+    Used only on pre-Android-7 devices, where `logcat --pid` is unavailable, so the tail
+    is unfiltered and pids are matched from the line's pid column instead.
+    """
+
+    def __init__(self, cmd: list[str], pids: list[int]) -> None:
+        super().__init__(cmd)
+        self._pids = set(pids)
+
+    def readline(self) -> str | None:
+        while True:
+            line = super().readline()
+            if line is None:
+                return None
+            if parse_logcat_pid(line) in self._pids:
+                return line
+
+
 class AndroidDevice(Device):
     """An Android device controlled via adb."""
 
@@ -189,6 +282,7 @@ class AndroidDevice(Device):
         self._status = status
         self._size: tuple[int, int] | None = None
         self._app_labels: dict[str, str] = {}
+        self._pid_flag: bool | None = None
 
     def _run(self, *args: str, timeout: float = 30) -> bytes:
         cmd = [find_adb(), "-s", self._serial, *args]
@@ -337,15 +431,78 @@ class AndroidDevice(Device):
                 return line
         return None
 
-    def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
+    def pidof(self, package: str) -> list[int]:
+        """Return the live pid(s) of `package`, or [] when it is not running."""
+        cmd = [find_adb(), "-s", self._serial, "shell", "pidof", package]
+        # pidof exits non-zero when nothing matches, so don't route through _shell.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        return parse_pidof(result.stdout)
+
+    def foreground_package(self) -> str | None:
+        """Return the package of the app currently in the foreground, or None."""
+        return parse_foreground_package(self._shell("dumpsys", "activity", "activities"))
+
+    def _supports_pid_flag(self) -> bool:
+        """Whether `logcat --pid` is available (Android 7 / API 24+), cached."""
+        if self._pid_flag is None:
+            try:
+                sdk = int(self._shell("getprop", "ro.build.version.sdk").strip())
+            except (ValueError, DeviceError):
+                sdk = 0
+            self._pid_flag = sdk >= 24
+        return self._pid_flag
+
+    def _resolve_scope_pids(self, scope: LogScope) -> list[int]:
+        """Resolve a scope to concrete pids ([] when the target app is not running)."""
+        if scope.pid is not None:
+            return [scope.pid]
+        package = scope.package
+        if not package and scope.foreground:
+            package = self.foreground_package()
+        if not package:
+            return []
+        return self.pidof(package)
+
+    def logs(
+        self,
+        lines: int = 200,
+        filter_str: str | None = None,
+        scope: LogScope | None = None,
+    ) -> str:
         # Over-fetch when filtering so `lines` matching lines usually survive the filter.
         fetch = lines if not filter_str else max(lines * 10, 2000)
-        output = self._shell("logcat", "-d", "-t", str(fetch), timeout=60)
-        return apply_filter(output, filter_str, lines)
+        flutter = bool(scope and scope.flutter)
+        if scope and scope.is_app_scoped:
+            pids = self._resolve_scope_pids(scope)
+            if not pids:
+                return ""  # app not running — nothing scoped to show
+            modern = self._supports_pid_flag()
+            args = build_logcat_args(pids, tail=fetch, flutter=flutter, modern=modern)
+            output = self._shell(*args, timeout=60)
+            if not modern:
+                output = filter_lines_by_pids(output, pids)
+            return apply_filter(output, filter_str, lines)
+        args = build_logcat_args([], tail=fetch, flutter=flutter, modern=True)
+        return apply_filter(self._shell(*args, timeout=60), filter_str, lines)
 
-    def stream_logs(self) -> LogStream:
+    def stream_logs(self, scope: LogScope | None = None) -> LogStream:
         # -T 1: start from the most recent line instead of replaying the whole buffer.
-        return LogStream([find_adb(), "-s", self._serial, "logcat", "-T", "1"])
+        if scope and scope.is_app_scoped:
+            flutter = scope.flutter
+            modern = self._supports_pid_flag()
+            adb, serial = find_adb(), self._serial
+
+            def spawn(pids: list[int]) -> LogStream:
+                args = build_logcat_args(pids, flutter=flutter, modern=modern)
+                cmd = [adb, "-s", serial, *args]
+                return LogStream(cmd) if modern else _PidFilteredLogStream(cmd, pids)
+
+            # ScopedLogStream re-resolves pids on a timer, so a restarted app (new pid)
+            # is picked up automatically and the tail is restarted against it.
+            return ScopedLogStream(lambda: self._resolve_scope_pids(scope), spawn)
+        flutter = bool(scope and scope.flutter)
+        args = build_logcat_args([], flutter=flutter, modern=True)
+        return LogStream([find_adb(), "-s", self._serial, *args])
 
     def crash_reports(self, limit: int = 5) -> list[dict[str, str]]:
         crashes = parse_dropbox_crashes(

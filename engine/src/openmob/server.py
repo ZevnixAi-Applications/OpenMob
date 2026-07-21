@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from openmob import __version__, flutter, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, SessionNotFound
 from openmob.device import Device, DeviceError
-from openmob.logstream import matches_filter
+from openmob.logstream import LogScope, matches_filter
 from openmob.manager import DeviceManager, DeviceNotFound
 from openmob.virtual import CreateJobNotFound, VirtualDeviceNotFound
 
@@ -284,9 +284,38 @@ def debug_detach(session_id: str, kill: bool = False) -> dict:
     return debug_manager.remove(session_id, kill=kill)
 
 
+def _log_scope(
+    package: str | None, pid: int | None, scope: str | None, flutter: bool
+) -> LogScope | None:
+    """Build a LogScope from query params, or None for an unscoped whole-device tail.
+
+    `scope=foreground` auto-targets the foreground app (Android). An explicit `pid` or
+    `package` scopes to that app. `flutter` narrows to Flutter output and, on its own,
+    still returns a scope (a Flutter-tagged whole-device tail).
+    """
+    log_scope = LogScope(
+        package=package or None,
+        pid=pid,
+        foreground=scope == "foreground",
+        flutter=flutter,
+    )
+    return log_scope if (log_scope.is_app_scoped or log_scope.flutter) else None
+
+
 @router.get("/devices/{device_id}/logs")
-def get_logs(device_id: str, lines: int = 200, filter: str | None = None) -> dict[str, str]:
-    return {"logs": manager.get(device_id).logs(lines=lines, filter_str=filter)}
+def get_logs(
+    device_id: str,
+    lines: int = 200,
+    filter: str | None = None,
+    package: str | None = None,
+    pid: int | None = None,
+    scope: str | None = None,
+    flutter: bool = False,
+) -> dict[str, str]:
+    log_scope = _log_scope(package, pid, scope, flutter)
+    return {
+        "logs": manager.get(device_id).logs(lines=lines, filter_str=filter, scope=log_scope)
+    }
 
 
 @router.post("/devices/{device_id}/screenshot/save")
@@ -351,12 +380,26 @@ def flutter_hot_reload(device_id: str) -> dict[str, object]:
 
 
 @router.websocket("/devices/{device_id}/logs/stream")
-async def logs_stream(websocket: WebSocket, device_id: str, filter: str | None = None) -> None:
-    """Push log lines (one text message per line) until the client disconnects."""
+async def logs_stream(
+    websocket: WebSocket,
+    device_id: str,
+    filter: str | None = None,
+    package: str | None = None,
+    pid: int | None = None,
+    scope: str | None = None,
+    flutter: bool = False,
+) -> None:
+    """Push log lines (one text message per line) until the client disconnects.
+
+    Optional query params scope the tail to one app: `package=<id>` (Android resolves
+    its live pid and follows restarts), `pid=<n>`, or `scope=foreground`. `flutter=true`
+    narrows to Flutter output. Without any of these, the whole device is tailed.
+    """
     await websocket.accept()
+    log_scope = _log_scope(package, pid, scope, flutter)
     try:
         device = manager.get(device_id)
-        stream = await run_in_threadpool(device.stream_logs)
+        stream = await run_in_threadpool(device.stream_logs, log_scope)
     except DeviceNotFound:
         await websocket.close(code=4004, reason=f"device {device_id!r} not found")
         return

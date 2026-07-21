@@ -42,7 +42,7 @@ Verify from macOS with `dns-sd -B _openmob._tcp local.`
 
 | Method | Path | Body / Notes |
 |---|---|---|
-| GET | `/devices/{id}/logs` | `?lines=200&filter=str` → `{"logs":"..."}` (recent snapshot; filter = case-insensitive substring) |
+| GET | `/devices/{id}/logs` | `?lines=200&filter=str` → `{"logs":"..."}` (recent snapshot; filter = case-insensitive substring). App-scope with `&package=<id>`, `&pid=<n>`, or `&scope=foreground` (Android); `&flutter=true` narrows to Flutter output. A scoped app that isn't running returns `""`. |
 | POST | `/devices/{id}/screenshot/save` | `{"path":"/abs/path.png"}` → `{"ok":true,"path":"..."}` (writes PNG on the engine host, creates dirs) |
 | GET | `/devices/{id}/crashes` | `?limit=5` → recent app crash summaries, newest first |
 | POST | `/devices/{id}/open_url` | `{"url":"myapp://deep/link"}` |
@@ -100,6 +100,8 @@ The wire contract is identical in all cases: binary JPEG messages, no metadata. 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/logs/stream?filter=str`
 
 Server pushes log lines as text messages (one line per message) as they appear. `filter` is an optional case-insensitive substring match. Client sends nothing; close to stop.
+
+The tail can be scoped to a single app instead of the whole device with the same params as the snapshot: `&package=<id>`, `&pid=<n>`, `&scope=foreground` (Android), and `&flutter=true`. When scoped by package, the engine resolves the app's live pid and re-resolves it periodically, so a **restarted app (new pid) is followed automatically** and the tail streams nothing (staying connected) while the app is not running.
 
 ## MCP server
 

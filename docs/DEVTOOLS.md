@@ -6,13 +6,19 @@ The engine's developer-tools pack: device logs, crash reports, everyday app verb
 
 ## Logs
 
-- **Snapshot** — `GET /devices/{id}/logs?lines=N&filter=str` / MCP `get_logs(device_id, lines, filter)`.
-  - Android: `adb logcat -d -t N`. When a filter is set the engine over-fetches, then keeps the last N matching lines. Filtering is a case-insensitive substring match, applied server-side.
-  - iOS (✅ verified-live): captures ~3 seconds of `pymobiledevice3 syslog live` output (iOS has no dump-the-ring-buffer equivalent over usbmux), then filters/trims the same way. Works over plain usbmux — no sudo, no tunnel.
-- **Live tail** — `WS /devices/{id}/logs/stream?filter=str`, one log line per text message.
-  - Android: `adb logcat -T 1` subprocess (starts at "now", no buffer replay).
-  - iOS: `pymobiledevice3 syslog live` subprocess (`PYTHONUNBUFFERED=1` so lines arrive promptly).
-- **UI**: the desktop app has a collapsible "Logs" panel under the device screen with a filter box, pause, and clear. It only connects while expanded.
+Logs are **app-scoped by default**, not a device-wide firehose: the point is to see *your app's* output (especially Flutter `print`/`debugPrint`), not system spam. A scope is one of: a `package` (resolve the app's live pid and filter to it), an explicit `pid`, `scope=foreground` (auto-target the foreground app, Android), or none (whole device — an explicit opt-in). `flutter=true` narrows to Flutter output. All scoping params work on both the snapshot and the live tail.
+
+- **Snapshot** — `GET /devices/{id}/logs?lines=N&filter=str[&package=&pid=&scope=foreground&flutter=true]` / MCP `get_logs(device_id, lines, filter, package, scope, flutter)`.
+  - Android: `adb logcat -d -t N`. Scoped by pid via `logcat --pid=<pid>` (one flag per pid; on pre-Android-7 devices, which lack `--pid`, the engine greps the pid column instead). `flutter=true` appends the `flutter:V *:S` filterspec. A `filter` over-fetches then keeps the last N matching lines (case-insensitive substring). A scoped app that is not running returns `""`.
+  - iOS (device, ✅ verified-live): `pymobiledevice3 syslog live` for ~3 s (iOS has no dump-the-ring-buffer equivalent over usbmux), scoped with `--pid` or `--process-name`. Works over plain usbmux — no sudo, no tunnel.
+  - iOS (simulator): `xcrun simctl spawn <udid> log show --last 30s`, scoped with an NSPredicate (`processID == <pid>` / `process == "<name>"`).
+- **Live tail** — `WS /devices/{id}/logs/stream?filter=str[&package=&pid=&scope=foreground&flutter=true]`, one log line per text message.
+  - Android: `adb logcat -T 1` (starts at "now", no buffer replay). **Scoped tails re-resolve the pid on a timer**, so a restarted app (new pid) is followed automatically; while the app isn't running the tail stays connected and streams nothing until it comes up.
+  - iOS (device): `pymobiledevice3 syslog live [--pid|--process-name]` (`PYTHONUNBUFFERED=1` so lines arrive promptly). The process-name filter follows the app across restarts on its own.
+  - iOS (simulator): `xcrun simctl spawn <udid> log stream --level debug` with the same predicate.
+- **UI**: the desktop app's collapsible "Logs" panel has a **scope selector** at the top — Foreground app (Android default) / a specific installed app / Whole device — plus a **Flutter only** toggle, a filter box, pause, and clear. When the scoped app isn't running the empty state reads "Waiting for &lt;app&gt; to produce logs…". It only connects while expanded.
+
+**iOS scoping caveat**: iOS filters by process *name* or pid, not bundle id. The engine derives the process name from the bundle id's last component (`com.acme.MyApp` → `MyApp`), which is the CFBundleExecutable for most Flutter/Xcode apps but can be wrong (e.g. Flutter's iOS target is often `Runner`); pass an explicit `pid` when the name guess misses. `scope=foreground` and the `flutter` tag are Android-only. The real-device syslog path itself is verified working without sudo; the process-scoping flags are live-untested on the read-only iPhone in this setup.
 
 ## Screenshots to disk
 

@@ -4,19 +4,35 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../api/engine_client.dart';
 import '../theme.dart';
 
-/// Collapsible live log panel: tails the engine's log WebSocket for a device,
-/// with a substring filter and a pause toggle.
+/// Collapsible live log panel scoped to ONE app by default, not the whole device.
+///
+/// A scope selector at the top chooses what to tail: the foreground app (Android),
+/// a specific installed app, or the whole device. A "Flutter only" toggle narrows to
+/// Flutter framework output. The panel tails the engine's log WebSocket with the
+/// current scope, plus a substring filter and pause/clear controls.
 class LogsPanel extends StatefulWidget {
-  const LogsPanel({super.key, required this.logsUriBuilder});
+  const LogsPanel({
+    super.key,
+    required this.deviceId,
+    required this.platform,
+    required this.client,
+  });
 
-  /// Builds the WS URI for the current device with an optional filter.
-  final Uri Function({String? filter}) logsUriBuilder;
+  final String deviceId;
+  final String platform; // "android" | "ios"
+  final EngineClient client;
 
   @override
   State<LogsPanel> createState() => _LogsPanelState();
 }
+
+/// Sentinel scope keys; any other value is `pkg:<package>`.
+const String _scopeForeground = 'foreground';
+const String _scopeDevice = 'device';
+const String _pkgPrefix = 'pkg:';
 
 class _LogsPanelState extends State<LogsPanel> {
   static const int _maxLines = 500;
@@ -31,23 +47,51 @@ class _LogsPanelState extends State<LogsPanel> {
   bool _expanded = false;
   bool _paused = false;
   bool _connected = false;
+  bool _flutterOnly = false;
   String _filter = '';
 
-  @override
-  void didUpdateWidget(LogsPanel oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.logsUriBuilder != widget.logsUriBuilder) {
-      _lines.clear();
-      if (_expanded) _reconnect();
+  List<AppInfo> _apps = const [];
+  bool _appsLoaded = false;
+
+  // Default to the foreground app on Android (logs "just work" when a dev opens
+  // their app); iOS has no foreground query, so start at whole device.
+  late String _scope =
+      widget.platform == 'android' ? _scopeForeground : _scopeDevice;
+
+  Uri _logsUri() {
+    String? package;
+    String? scope;
+    if (_scope == _scopeForeground) {
+      scope = 'foreground';
+    } else if (_scope.startsWith(_pkgPrefix)) {
+      package = _scope.substring(_pkgPrefix.length);
+    }
+    return widget.client.logsStreamUri(
+      widget.deviceId,
+      filter: _filter,
+      package: package,
+      scope: scope,
+      flutter: _flutterOnly,
+    );
+  }
+
+  Future<void> _loadApps() async {
+    try {
+      final apps = await widget.client.apps(widget.deviceId);
+      if (!mounted) return;
+      setState(() {
+        _apps = apps;
+        _appsLoaded = true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _appsLoaded = true);
     }
   }
 
   void _connect() {
     _reconnectTimer?.cancel();
     try {
-      final channel = WebSocketChannel.connect(
-        widget.logsUriBuilder(filter: _filter),
-      );
+      final channel = WebSocketChannel.connect(_logsUri());
       _channel = channel;
       _sub = channel.stream.listen(
         (message) {
@@ -104,6 +148,7 @@ class _LogsPanelState extends State<LogsPanel> {
   void _toggleExpanded() {
     setState(() => _expanded = !_expanded);
     if (_expanded) {
+      if (!_appsLoaded) _loadApps();
       _connect();
     } else {
       _disconnect();
@@ -115,6 +160,36 @@ class _LogsPanelState extends State<LogsPanel> {
     _lines.clear();
     if (_expanded) _reconnect();
     setState(() {});
+  }
+
+  void _onScopeChanged(String? scope) {
+    if (scope == null || scope == _scope) return;
+    setState(() {
+      _scope = scope;
+      _lines.clear();
+    });
+    if (_expanded) _reconnect();
+  }
+
+  void _toggleFlutter() {
+    setState(() {
+      _flutterOnly = !_flutterOnly;
+      _lines.clear();
+    });
+    if (_expanded) _reconnect();
+  }
+
+  /// Human label for the scoped app (null == whole device).
+  String? _scopeLabel() {
+    if (_scope == _scopeForeground) return 'the foreground app';
+    if (_scope.startsWith(_pkgPrefix)) {
+      final package = _scope.substring(_pkgPrefix.length);
+      for (final app in _apps) {
+        if (app.package == package) return app.name;
+      }
+      return package;
+    }
+    return null;
   }
 
   @override
@@ -162,17 +237,23 @@ class _LogsPanelState extends State<LogsPanel> {
               'Logs',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
             ),
-            if (_expanded && !_connected) ...[
-              const SizedBox(width: 8),
-              const Text(
-                'connecting…',
-                style: TextStyle(color: OM.textMuted, fontSize: 11),
-              ),
+            if (_expanded) ...[
+              const SizedBox(width: 10),
+              _scopeSelector(),
+              if (!_connected) ...[
+                const SizedBox(width: 8),
+                const Text(
+                  'connecting…',
+                  style: TextStyle(color: OM.textMuted, fontSize: 11),
+                ),
+              ],
             ],
             const Spacer(),
             if (_expanded) ...[
+              _flutterToggle(),
+              const SizedBox(width: 6),
               SizedBox(
-                width: 200,
+                width: 150,
                 height: 26,
                 child: TextField(
                   controller: _filterController,
@@ -232,14 +313,95 @@ class _LogsPanelState extends State<LogsPanel> {
     );
   }
 
+  Widget _scopeSelector() {
+    final items = <DropdownMenuItem<String>>[
+      if (widget.platform == 'android')
+        const DropdownMenuItem(
+          value: _scopeForeground,
+          child: Text('Foreground app'),
+        ),
+      for (final app in _sortedApps())
+        DropdownMenuItem(
+          value: '$_pkgPrefix${app.package}',
+          child: Text(app.name, overflow: TextOverflow.ellipsis),
+        ),
+      const DropdownMenuItem(value: _scopeDevice, child: Text('Whole device')),
+    ];
+    // A previously-selected package that isn't in the list yet (apps still
+    // loading) still needs a matching item so the dropdown has a valid value.
+    if (!items.any((item) => item.value == _scope)) {
+      items.insert(
+        0,
+        DropdownMenuItem(value: _scope, child: Text(_scopeLabel() ?? _scope)),
+      );
+    }
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 190),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: _scope,
+          items: items,
+          onChanged: _onScopeChanged,
+          isDense: true,
+          isExpanded: true,
+          dropdownColor: OM.card,
+          borderRadius: BorderRadius.circular(8),
+          focusColor: Colors.transparent,
+          icon: const Icon(Icons.arrow_drop_down, size: 18, color: OM.textMuted),
+          style: const TextStyle(fontSize: 11, color: OM.text),
+        ),
+      ),
+    );
+  }
+
+  Widget _flutterToggle() {
+    return Tooltip(
+      message: _flutterOnly ? 'Showing Flutter output only' : 'Flutter only',
+      child: InkWell(
+        onTap: _toggleFlutter,
+        borderRadius: BorderRadius.circular(6),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: _flutterOnly ? OM.accent.withValues(alpha: 0.15) : OM.bg,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _flutterOnly ? OM.accent : OM.border,
+            ),
+          ),
+          child: Text(
+            'Flutter',
+            style: TextStyle(
+              fontSize: 11,
+              color: _flutterOnly ? OM.accent : OM.textMuted,
+              fontWeight: _flutterOnly ? FontWeight.w600 : FontWeight.w400,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<AppInfo> _sortedApps() {
+    final apps = [..._apps];
+    apps.sort(
+      (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+    );
+    return apps;
+  }
+
   Widget _logList() {
+    final label = _scopeLabel();
+    final emptyText = label == null
+        ? 'Waiting for log output…'
+        : 'Waiting for $label to produce logs…';
     return SizedBox(
       height: 180,
       child: _lines.isEmpty
-          ? const Center(
+          ? Center(
               child: Text(
-                'Waiting for log output…',
-                style: TextStyle(color: OM.textMuted, fontSize: 11),
+                emptyText,
+                style: const TextStyle(color: OM.textMuted, fontSize: 11),
               ),
             )
           : ListView.builder(
