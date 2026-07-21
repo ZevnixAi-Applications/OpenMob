@@ -33,3 +33,6 @@ testapp/build/
 testapp/.dart_tool/
 testapp/.flutter-plugins*
 testapp/ephemeral/
+
+# Build artifacts / release binaries
+dist/

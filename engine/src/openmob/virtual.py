@@ -19,6 +19,7 @@ from pathlib import Path
 
 from openmob.android import find_adb, parse_devices
 from openmob.device import DeviceError
+from openmob.osinfo import IOS_REQUIRES_MACOS, exe_name, is_macos, is_windows, script_name
 
 # AVD names are restricted to these characters (no spaces), which also lets us
 # filter emulator log noise ("INFO    | ...") out of `emulator -list-avds`.
@@ -58,10 +59,16 @@ class CreateJobNotFound(Exception):
 @cache
 def find_emulator() -> str:
     """Locate the Android SDK emulator binary, mirroring `android.find_adb`."""
+    emulator = exe_name("emulator")
     candidates = []
-    if android_home := os.environ.get("ANDROID_HOME"):
-        candidates.append(Path(android_home) / "emulator" / "emulator")
-    candidates.append(Path.home() / "Library/Android/sdk/emulator/emulator")
+    for env in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if root := os.environ.get(env):
+            candidates.append(Path(root) / "emulator" / emulator)
+    if is_windows():
+        if local := os.environ.get("LOCALAPPDATA"):
+            candidates.append(Path(local) / "Android" / "Sdk" / "emulator" / emulator)
+    else:
+        candidates.append(Path.home() / "Library/Android/sdk/emulator" / emulator)
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
@@ -71,17 +78,22 @@ def find_emulator() -> str:
 
 
 def _sdk_root() -> Path:
-    """The Android SDK root (env `ANDROID_HOME`, default `~/Library/Android/sdk`)."""
-    if android_home := os.environ.get("ANDROID_HOME"):
-        return Path(android_home)
+    """The Android SDK root: env `ANDROID_HOME`/`ANDROID_SDK_ROOT`, else the OS default."""
+    for env in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
+        if root := os.environ.get(env):
+            return Path(root)
+    if is_windows():
+        local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(local) / "Android" / "Sdk"
     return Path.home() / "Library/Android/sdk"
 
 
 def _find_cmdline_tool(name: str) -> str:
-    """Locate an SDK cmdline-tool (`sdkmanager`/`avdmanager`)."""
+    """Locate an SDK cmdline-tool (`sdkmanager`/`avdmanager`); `.bat` on Windows."""
+    tool = script_name(name)
     candidates = [
-        _sdk_root() / "cmdline-tools" / "latest" / "bin" / name,
-        _sdk_root() / "tools" / "bin" / name,
+        _sdk_root() / "cmdline-tools" / "latest" / "bin" / tool,
+        _sdk_root() / "tools" / "bin" / tool,
     ]
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
@@ -274,7 +286,9 @@ def running_avds() -> dict[str, str]:
 
 
 def list_simulators() -> list[dict[str, str]]:
-    """Available iOS Simulators as [{"name","udid","state"}]."""
+    """Available iOS Simulators as [{"name","udid","state"}] (macOS only; else [])."""
+    if not is_macos():
+        return []
     try:
         result = subprocess.run(
             ["xcrun", "simctl", "list", "devices", "--json"],
@@ -417,6 +431,13 @@ def _android_create_options() -> dict:
 
 
 def _ios_create_options() -> dict:
+    if not is_macos():
+        return {
+            "available": False,
+            "reason": IOS_REQUIRES_MACOS,
+            "device_types": [],
+            "runtimes": [],
+        }
     try:
         types = subprocess.run(
             ["xcrun", "simctl", "list", "devicetypes", "--json"],
@@ -667,6 +688,8 @@ def create_virtual_device(
             raise DeviceError("device_profile is required to create an Android AVD")
         work = _create_avd_job(name, device_profile, system_image)
     elif platform == "ios":
+        if not is_macos():
+            raise DeviceError(IOS_REQUIRES_MACOS)
         if not device_type:
             raise DeviceError("device_type is required to create an iOS simulator")
         if not runtime:

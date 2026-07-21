@@ -11,6 +11,7 @@ Start with the project [README](../README.md) for the overview, then dive in her
 | [DEBUGGING.md](DEBUGGING.md) | Interactive iOS lldb sessions: attach, breakpoints, step, inspect state, evaluate expressions. |
 | [VIRTUAL_DEVICES.md](VIRTUAL_DEVICES.md) | Listing, creating, and booting Android AVDs and iOS simulators. |
 | [IOS.md](IOS.md) | Physical-iPhone setup: building and installing WebDriverAgent, `pymobiledevice3` forwarding, and the iOS 17+ tunnel. |
+| [WINDOWS.md](WINDOWS.md) | Running OpenMob on Windows (Android + emulators): install, run from source, connect a device, and build the Windows installer. |
 
 Contributing guidelines live in [CONTRIBUTING.md](../CONTRIBUTING.md).
 </content>

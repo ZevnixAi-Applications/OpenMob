@@ -28,6 +28,7 @@ from functools import cache
 from pathlib import Path
 
 from openmob.device import DeviceError
+from openmob.osinfo import is_windows
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +52,15 @@ FAILURE_RESTART_DELAY = 0.3
 
 @cache
 def find_ffmpeg() -> str:
-    """Locate the ffmpeg binary, preferring well-known install paths."""
-    for candidate in (Path("/opt/homebrew/bin/ffmpeg"), Path("/usr/local/bin/ffmpeg")):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+    """Locate the ffmpeg binary; PATH lookup everywhere, plus Homebrew paths on Unix."""
+    if not is_windows():
+        # Homebrew installs GUI apps do not see on their PATH; probe them first.
+        for candidate in (Path("/opt/homebrew/bin/ffmpeg"), Path("/usr/local/bin/ffmpeg")):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
     if on_path := shutil.which("ffmpeg"):
         return on_path
-    raise DeviceError("ffmpeg not found: install it (e.g. `brew install ffmpeg`) or add it to PATH")
+    raise DeviceError("ffmpeg not found: install it and add it to PATH (macOS: `brew install ffmpeg`)")
 
 
 def capped_size(width: int, height: int, max_width: int = MAX_WIDTH) -> tuple[int, int]:
@@ -193,8 +196,12 @@ class _ProcSupervisor:
         for proc in self._procs:
             if proc.poll() is None:
                 try:
-                    # start_new_session=True makes each proc a group leader.
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    if is_windows():
+                        # No process groups / SIGKILL on Windows; kill the process.
+                        proc.kill()
+                    else:
+                        # start_new_session=True makes each proc a group leader.
+                        os.killpg(proc.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
                     pass
         for proc in self._procs:

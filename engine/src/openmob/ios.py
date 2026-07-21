@@ -29,6 +29,7 @@ import httpx
 
 from openmob.device import Device, DeviceError
 from openmob.logstream import LogScope, LogStream, apply_filter
+from openmob.osinfo import is_macos
 
 def _run_coro(coro: Coroutine[Any, Any, Any]) -> Any:
     """Run a coroutine to completion from sync code, even under a running event loop.
@@ -606,7 +607,13 @@ def _lockdown_name(udid: str) -> str:
 
 
 def discover() -> list[IosDevice]:
-    """Discover connected iOS devices via usbmux (control requires WDA, see docs/IOS.md)."""
+    """Discover connected iOS devices via usbmux (control requires WDA, see docs/IOS.md).
+
+    iOS control needs Xcode + WebDriverAgent, which exist only on macOS, so discovery
+    returns nothing off macOS rather than surfacing devices we could not control.
+    """
+    if not is_macos():
+        return []
 
     async def fetch() -> list:
         from pymobiledevice3 import usbmux
