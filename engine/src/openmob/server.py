@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import logging
+import os
 import tempfile
 from pathlib import Path
 
@@ -18,11 +20,22 @@ from openmob.manager import DeviceManager, DeviceNotFound
 HOST = "127.0.0.1"
 PORT = 8930
 
-STREAM_FPS = 8
+STREAM_FPS = 8  # screencap poll fallback rate
+VIDEO_STREAM_FPS = 20  # relay cap for the H.264 video pipeline
 JPEG_QUALITY = 70
+
+logger = logging.getLogger(__name__)
 
 manager = DeviceManager()
 router = APIRouter(prefix="/api/v1")
+
+# Devices for which the video->poll fallback has already been logged.
+_fallback_logged: set[str] = set()
+
+
+def _android_stream_mode() -> str:
+    """Streaming backend for Android mirrors: "video" (default) or "poll"."""
+    return os.environ.get("OPENMOB_ANDROID_STREAM", "video").strip().lower()
 
 
 class TapBody(BaseModel):
@@ -144,18 +157,77 @@ async def stream(websocket: WebSocket, device_id: str) -> None:
     except DeviceNotFound:
         await websocket.close(code=4004, reason=f"device {device_id!r} not found")
         return
-    interval = 1 / STREAM_FPS
     try:
-        while True:
-            started = asyncio.get_running_loop().time()
-            frame = await run_in_threadpool(_capture_jpeg, device)
-            await websocket.send_bytes(frame)
-            elapsed = asyncio.get_running_loop().time() - started
-            await asyncio.sleep(max(0.0, interval - elapsed))
+        if device.platform == "android" and _android_stream_mode() != "poll":
+            try:
+                await _stream_video(websocket, device)
+                return
+            except DeviceError as exc:
+                if device.id not in _fallback_logged:
+                    _fallback_logged.add(device.id)
+                    logger.warning(
+                        "video stream unavailable for %s (%s); "
+                        "falling back to screencap polling",
+                        device.id,
+                        exc,
+                    )
+        await _stream_poll(websocket, device)
     except (WebSocketDisconnect, ConnectionError):
         pass
     except DeviceError:
-        await websocket.close(code=1011, reason="screenshot failed")
+        await websocket.close(code=1011, reason="stream failed")
+
+
+async def _stream_video(websocket: WebSocket, device: Device) -> None:
+    """Relay frames from the device's screenrecord->ffmpeg pipeline (~20 fps cap).
+
+    screenrecord only encodes when the display updates, and its decoder holds the
+    last frame until the next update arrives. So: prime the client with one
+    screencap frame, and when the pipeline goes stale (keepalive repeat, detected
+    by identity) send a fresh screencap instead of the repeated frame.
+    """
+    frames = device.stream_frames()  # raises DeviceError -> caller falls back to poll
+    interval = 1 / VIDEO_STREAM_FPS
+    loop = asyncio.get_running_loop()
+    previous: bytes | None = None
+    try:
+        try:
+            await websocket.send_bytes(await run_in_threadpool(_capture_jpeg, device))
+        except DeviceError:
+            pass  # priming is best-effort; video frames may still arrive
+        while True:
+            started = loop.time()
+            frame = await run_in_threadpool(next, frames, None)
+            if frame is None:
+                raise DeviceError("video pipeline ended")
+            if frame and frame is not previous:
+                previous = frame
+            else:
+                # Stale tick (keepalive repeat or nothing decoded yet): refresh via
+                # screencap so sparse updates, which sit in the decoder until the
+                # next display change, become visible within ~1 s.
+                try:
+                    frame = await run_in_threadpool(_capture_jpeg, device)
+                except DeviceError:
+                    frame = previous  # keep the last good frame as a keepalive
+            if frame:
+                await websocket.send_bytes(frame)
+            elapsed = loop.time() - started
+            await asyncio.sleep(max(0.0, interval - elapsed))
+    finally:
+        await run_in_threadpool(frames.close)
+
+
+async def _stream_poll(websocket: WebSocket, device: Device) -> None:
+    """Poll screenshots and relay them as JPEG frames (~8 fps)."""
+    interval = 1 / STREAM_FPS
+    loop = asyncio.get_running_loop()
+    while True:
+        started = loop.time()
+        frame = await run_in_threadpool(_capture_jpeg, device)
+        await websocket.send_bytes(frame)
+        elapsed = loop.time() - started
+        await asyncio.sleep(max(0.0, interval - elapsed))
 
 
 def _capture_jpeg(device: Device) -> bytes:

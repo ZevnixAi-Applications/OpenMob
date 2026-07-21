@@ -27,7 +27,12 @@ All action endpoints return `{"ok":true}` or HTTP 4xx/5xx with `{"detail":"..."}
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/stream`
 
-Server pushes binary JPEG frames (one WebSocket binary message per frame) at ~5–10 fps. Client sends nothing; close to stop.
+Server pushes binary JPEG frames (one WebSocket binary message per frame). Client sends nothing; close to stop.
+
+- **Android**: frames come from a low-latency H.264 video pipeline (`adb exec-out screenrecord --output-format=h264` decoded to JPEG by `ffmpeg`), relayed at up to ~20 fps while the screen is changing, newest frame only (stale frames are dropped). screenrecord only encodes on display updates, so an idle screen is refreshed via `screencap` about once per second; the first frame is also a `screencap` so clients render immediately. The pipeline restarts itself transparently around screenrecord's 180 s recording limit. If `ffmpeg` is missing or the device rejects `screenrecord`, the server falls back to `screencap` polling (~8 fps) transparently. Set `OPENMOB_ANDROID_STREAM=poll` to force the polling path (`video` is the default). Requires `ffmpeg` (Homebrew path or `PATH`).
+- **iOS**: screenshot polling at ~5–10 fps.
+
+The `/screenshot` REST endpoint is unaffected: it always returns a full-resolution `screencap` PNG.
 
 ## MCP server
 
