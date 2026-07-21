@@ -37,26 +37,44 @@ class OpenMobApp extends StatelessWidget {
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
 
+  /// Below this width the sidebar collapses into a drawer (mobile layout).
+  static const double _mobileBreakpoint = 700;
+
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
-    return Scaffold(
-      body: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Sidebar(),
-          Expanded(
-            child: Column(
-              children: [
-                if (state.lastError != null)
-                  _ErrorBanner(message: state.lastError!),
-                Expanded(child: _MainPane(state: state)),
-                if (state.selectedDevice != null) const DeviceToolbar(),
-              ],
+    final content = Column(
+      children: [
+        if (state.lastError != null) _ErrorBanner(message: state.lastError!),
+        Expanded(child: _MainPane(state: state)),
+        if (state.selectedDevice != null) const DeviceToolbar(),
+      ],
+    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < _mobileBreakpoint) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text('OpenMob', style: TextStyle(fontSize: 15)),
+              backgroundColor: OM.sidebar,
             ),
+            drawer: const Drawer(
+              backgroundColor: OM.sidebar,
+              child: Sidebar(),
+            ),
+            body: content,
+          );
+        }
+        return Scaffold(
+          body: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Sidebar(),
+              Expanded(child: content),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

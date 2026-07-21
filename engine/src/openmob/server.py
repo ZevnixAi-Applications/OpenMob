@@ -13,11 +13,12 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from openmob import __version__, flutter
+from openmob import __version__, flutter, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager, SessionNotFound
 from openmob.device import Device, DeviceError
 from openmob.logstream import matches_filter
 from openmob.manager import DeviceManager, DeviceNotFound
+from openmob.virtual import VirtualDeviceNotFound
 
 HOST = "127.0.0.1"
 PORT = 8930
@@ -71,6 +72,10 @@ class PushBody(BaseModel):
 class PullBody(BaseModel):
     device_path: str
     local_path: str
+
+
+class VirtualDeviceBody(BaseModel):
+    name: str
 
 
 def device_info(device: Device) -> dict[str, str | int]:
@@ -357,6 +362,16 @@ async def logs_stream(websocket: WebSocket, device_id: str, filter: str | None =
             await run_in_threadpool(stream.close)
 
 
+@router.get("/virtual-devices")
+def list_virtual_devices() -> list[dict[str, str | None]]:
+    return virtual.list_virtual_devices()
+
+
+@router.post("/virtual-devices/launch")
+def launch_virtual_device(body: VirtualDeviceBody) -> dict[str, bool | str]:
+    return virtual.launch(body.name)
+
+
 @router.websocket("/devices/{device_id}/stream")
 async def stream(websocket: WebSocket, device_id: str) -> None:
     """Push binary JPEG frames until the client disconnects."""
@@ -393,6 +408,10 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(DeviceNotFound)
     async def _not_found(request: Request, exc: DeviceNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(VirtualDeviceNotFound)
+    async def _virtual_not_found(request: Request, exc: VirtualDeviceNotFound) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
 
     @app.exception_handler(DeviceError)

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from openmob import flutter
+from openmob import flutter, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager
 from openmob.device import DeviceError
 from openmob.manager import DeviceManager
@@ -252,6 +252,19 @@ def flutter_vm_service(device_id: str) -> dict[str, str]:
 def flutter_hot_reload(device_id: str) -> dict[str, object]:
     """Hot-reload the running debug Flutter app via its Dart VM service."""
     return flutter.hot_reload(manager.get(device_id))
+
+
+@mcp.tool()
+def list_virtual_devices() -> list[dict[str, str | None]]:
+    """List launchable virtual devices (Android AVDs and iOS Simulators)."""
+    return virtual.list_virtual_devices()
+
+
+@mcp.tool()
+def launch_virtual_device(name: str) -> str:
+    """Boot a virtual device by name; it then appears in list_devices once online."""
+    result = virtual.launch(name)
+    return str(result.get("note", "ok"))
 
 
 def run() -> None:

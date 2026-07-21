@@ -20,7 +20,12 @@ class AppState extends ChangeNotifier {
   bool engineOnline = false;
   String? engineVersion;
   List<Device> devices = [];
+  List<VirtualDevice> virtualDevices = [];
   String? selectedDeviceId;
+
+  /// Names of virtual devices the user just launched, shown as "booting…"
+  /// until polling reports them running.
+  final Set<String> launchingNames = {};
 
   /// Most recent action/engine error, shown transiently in the UI.
   String? lastError;
@@ -65,6 +70,7 @@ class AppState extends ChangeNotifier {
       engineOnline = false;
       engineVersion = null;
       devices = [];
+      virtualDevices = [];
       _notify();
       return;
     }
@@ -79,7 +85,31 @@ class AppState extends ChangeNotifier {
       devices = [];
       selectedDeviceId = null;
     }
+
+    try {
+      virtualDevices = await _client.virtualDevices();
+      launchingNames.removeWhere((name) =>
+          virtualDevices.any((v) => v.name == name && v.running));
+    } catch (_) {
+      virtualDevices = [];
+    }
     _notify();
+  }
+
+  Future<void> launchVirtualDevice(String name) async {
+    launchingNames.add(name); // optimistic "booting…"
+    _notify();
+    try {
+      await _client.launchVirtualDevice(name);
+      if (lastError != null) {
+        lastError = null;
+        _notify();
+      }
+    } catch (e) {
+      launchingNames.remove(name);
+      lastError = e is EngineException ? e.message : 'Engine unreachable';
+      _notify();
+    }
   }
 
   void selectDevice(String id) {

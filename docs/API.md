@@ -20,6 +20,8 @@ The engine serves a local HTTP + WebSocket API for UIs, and an MCP server for AI
 | POST | `/devices/{id}/uninstall` | `{"package":"com.example.app"}` |
 | GET | `/devices/{id}/apps` | `[{"package","name"}]` |
 | POST | `/devices/{id}/launch` | `{"package":"com.example.app"}` |
+| GET | `/virtual-devices` | `[{"name","platform":"android"\|"ios","kind":"avd"\|"simulator","state":"running"\|"stopped","device_id":str\|null}]` |
+| POST | `/virtual-devices/launch` | `{"name":"Pixel_7"}` → `{"ok":true,"note":"booting"\|"already running"}` (idempotent) |
 
 ### Developer tools (see docs/DEVTOOLS.md)
 
@@ -62,6 +64,17 @@ Debug errors return 400 `{"detail"}`; unknown sessions 404; missing real-device
 prerequisites 409 `{"detail","error":"capability_missing","commands":[...]}` with the
 exact commands to run. Sessions idle for 10 minutes are detached automatically.
 
+## Virtual devices
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/devices/virtual-devices` (`/api/v1/virtual-devices`) | list launchable AVDs and simulators |
+| POST | `/api/v1/virtual-devices/launch` | `{"name"}` → boot an AVD/simulator |
+
+Virtual devices are Android AVDs and iOS Simulators defined on this machine; once
+booted they appear in `/devices` like any other device (`device_id` is the adb serial /
+simulator UDID). See `docs/VIRTUAL_DEVICES.md`.
+
 ## WebSocket
 
 `ws://127.0.0.1:8930/api/v1/devices/{id}/stream`
@@ -74,7 +87,7 @@ Server pushes log lines as text messages (one line per message) as they appear. 
 
 ## MCP server
 
-`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`, plus developer tools: `get_logs`, `save_screenshot`, `get_crash_logs`, `open_url`, `clear_app_data`, `force_stop`, `push_file`, `pull_file`, `device_info`, `flutter_vm_service`, `flutter_hot_reload`.
+`openmob mcp` runs a stdio MCP server exposing tools mirroring the REST surface: `list_devices`, `get_screenshot`, `tap`, `swipe`, `input_text`, `press_key`, `install_app`, `uninstall_app`, `list_apps`, `launch_app`, `list_virtual_devices`, `launch_virtual_device`, plus developer tools: `get_logs`, `save_screenshot`, `get_crash_logs`, `open_url`, `clear_app_data`, `force_stop`, `push_file`, `pull_file`, `device_info`, `flutter_vm_service`, `flutter_hot_reload`.
 
 Debugger tools (one session per device, addressed by `device_id`): `debug_attach`, `debug_breakpoint` (`op`: add/remove/list), `debug_step` (`kind`: in/over/out/continue/pause), `debug_eval`, `debug_state`, `debug_detach`. See [DEBUGGING.md](DEBUGGING.md).
 

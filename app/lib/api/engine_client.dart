@@ -35,6 +35,38 @@ class Device {
   }
 }
 
+/// A launchable virtual device as reported by GET /api/v1/virtual-devices.
+class VirtualDevice {
+  const VirtualDevice({
+    required this.name,
+    required this.platform,
+    required this.kind,
+    required this.state,
+    this.deviceId,
+  });
+
+  final String name;
+  final String platform; // "android" | "ios"
+  final String kind; // "avd" | "simulator"
+  final String state; // "running" | "stopped"
+
+  /// Serial/UDID once running (AVDs have none while stopped).
+  final String? deviceId;
+
+  bool get running => state == 'running';
+  bool get isIos => platform == 'ios';
+
+  factory VirtualDevice.fromJson(Map<String, dynamic> json) {
+    return VirtualDevice(
+      name: json['name'] as String? ?? '',
+      platform: json['platform'] as String? ?? 'android',
+      kind: json['kind'] as String? ?? 'avd',
+      state: json['state'] as String? ?? 'stopped',
+      deviceId: json['device_id'] as String?,
+    );
+  }
+}
+
 class EngineException implements Exception {
   const EngineException(this.message);
   final String message;
@@ -100,6 +132,20 @@ class EngineClient {
         .map((e) => Device.fromJson(e as Map<String, dynamic>))
         .toList();
   }
+
+  Future<List<VirtualDevice>> virtualDevices() async {
+    final res = await http.get(_api('/virtual-devices')).timeout(_timeout);
+    if (res.statusCode != 200) {
+      throw EngineException('virtual-devices returned ${res.statusCode}');
+    }
+    final body = jsonDecode(res.body) as List<dynamic>;
+    return body
+        .map((e) => VirtualDevice.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<void> launchVirtualDevice(String name) =>
+      _post('/virtual-devices/launch', {'name': name});
 
   Future<void> tap(String deviceId, int x, int y) =>
       _post('/devices/$deviceId/tap', {'x': x, 'y': y});
