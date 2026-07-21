@@ -4,13 +4,14 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from openmob import flutter, virtual
+from openmob import flutter, flutter_run, virtual
 from openmob.debugger import CapabilityError, DebugError, DebugSessionManager
 from openmob.device import DeviceError
 from openmob.manager import DeviceManager
 
 manager = DeviceManager()
 debug_manager = DebugSessionManager()
+flutter_manager = flutter_run.FlutterRunManager()
 
 mcp = FastMCP(
     "openmob",
@@ -21,7 +22,9 @@ mcp = FastMCP(
         "(simulator UDIDs attach directly; real devices need a tunnel, errors explain how). "
         "Developer tools: device logs (get_logs), crash reports (get_crash_logs), "
         "deep links (open_url), file transfer (push_file/pull_file), device_info, and "
-        "Flutter debugging (flutter_vm_service, flutter_hot_reload)."
+        "Flutter debugging: launch a project with flutter_run for real hot reload/"
+        "restart (flutter_hot_reload, flutter_hot_restart, flutter_stop, "
+        "flutter_devtools_url), or flutter_vm_service to inspect an app started elsewhere."
     ),
 )
 
@@ -249,9 +252,57 @@ def flutter_vm_service(device_id: str) -> dict[str, str]:
 
 
 @mcp.tool()
+def flutter_run(device_id: str, project_path: str, mode: str = "debug") -> dict[str, object]:
+    """Launch a Flutter project on a device via `flutter run --machine` (managed session).
+
+    project_path must be a Flutter project dir (has pubspec.yaml); mode is "debug"
+    (default, hot reload works) or "profile". The tool owns the running app, so
+    flutter_hot_reload/flutter_hot_restart then genuinely reload it. Returns the
+    session with app_id and vm_service_uri once the app has started.
+    """
+    session = flutter_manager.start(manager.get(device_id), project_path, mode)
+    return session.info()
+
+
+@mcp.tool()
 def flutter_hot_reload(device_id: str) -> dict[str, object]:
-    """Hot-reload the running debug Flutter app via its Dart VM service."""
-    return flutter.hot_reload(manager.get(device_id))
+    """Hot-reload the running debug Flutter app.
+
+    Uses the OpenMob-managed `flutter run` session when one is active (a real hot
+    reload — the tool owns the kernel compiler). With no managed session it falls
+    back to the Dart VM service reloadSources path, which only works for apps
+    started from a `flutter run` elsewhere (an installed APK rejects it).
+    """
+    session = flutter_manager.get(device_id)
+    if session is not None and session.running:
+        return {"managed": True, **session.reload(full_restart=False)}
+    return {"managed": False, **flutter.hot_reload(manager.get(device_id))}
+
+
+@mcp.tool()
+def flutter_hot_restart(device_id: str) -> dict[str, object]:
+    """Hot-restart (full restart) the app in the managed `flutter run` session."""
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running:
+        raise DeviceError(
+            "hot restart needs a managed `flutter run` session; start one with flutter_run"
+        )
+    return {"managed": True, **session.reload(full_restart=True)}
+
+
+@mcp.tool()
+def flutter_stop(device_id: str) -> dict[str, object]:
+    """Stop the OpenMob-managed `flutter run` session for a device."""
+    return flutter_manager.stop(device_id)
+
+
+@mcp.tool()
+def flutter_devtools_url(device_id: str) -> dict[str, object]:
+    """Return a serveable DevTools URL wired to the managed app's VM service."""
+    session = flutter_manager.get(device_id)
+    if session is None or not session.running or not session.vm_service_uri:
+        raise DeviceError("no running flutter run session with a VM service; start one with flutter_run")
+    return flutter_manager.devtools_url(session)
 
 
 @mcp.tool()
