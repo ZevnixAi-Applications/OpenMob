@@ -8,6 +8,7 @@ import 'widgets/device_grid.dart';
 import 'widgets/device_screen.dart';
 import 'widgets/device_tab_bar.dart';
 import 'widgets/engine_discovery_dialog.dart';
+import 'widgets/flutter_run_panel.dart';
 import 'widgets/logs_panel.dart';
 import 'widgets/sidebar.dart';
 import 'widgets/toolbar.dart';
@@ -143,6 +144,12 @@ class _MainPane extends StatelessWidget {
               onSwipe: (x1, y1, x2, y2, ms) =>
                   state.swipeDevice(device.id, x1, y1, x2, y2, ms),
             ),
+          ),
+          const SizedBox(height: 12),
+          FlutterRunPanel(
+            key: ValueKey('flutter-${state.baseUrl}/${device.id}'),
+            client: state.client,
+            deviceId: device.id,
           ),
           const SizedBox(height: 12),
           LogsPanel(
