@@ -66,8 +66,8 @@ class Sidebar extends StatelessWidget {
                       final device = state.devices[i];
                       return _DeviceRow(
                         device: device,
-                        selected: device.id == state.selectedDeviceId,
-                        onTap: () => state.selectDevice(device.id),
+                        selected: device.id == state.activeDeviceId,
+                        onTap: () => state.openDevice(device.id),
                       );
                     },
                   ),
