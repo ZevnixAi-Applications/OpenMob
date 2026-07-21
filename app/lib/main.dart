@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 import 'widgets/device_screen.dart';
+import 'widgets/logs_panel.dart';
 import 'widgets/sidebar.dart';
 import 'widgets/toolbar.dart';
 
@@ -98,13 +99,26 @@ class _MainPane extends StatelessWidget {
     }
     return Padding(
       padding: const EdgeInsets.all(16),
-      child: DeviceScreen(
-        key: ValueKey('${state.baseUrl}/${device.id}'),
-        streamUri: state.client.streamUri(device.id),
-        deviceWidth: device.width,
-        deviceHeight: device.height,
-        onTapAt: (x, y) => state.tap(x, y),
-        onSwipe: (x1, y1, x2, y2, ms) => state.swipe(x1, y1, x2, y2, ms),
+      child: Column(
+        children: [
+          Expanded(
+            child: DeviceScreen(
+              key: ValueKey('${state.baseUrl}/${device.id}'),
+              streamUri: state.client.streamUri(device.id),
+              deviceWidth: device.width,
+              deviceHeight: device.height,
+              onTapAt: (x, y) => state.tap(x, y),
+              onSwipe: (x1, y1, x2, y2, ms) =>
+                  state.swipe(x1, y1, x2, y2, ms),
+            ),
+          ),
+          const SizedBox(height: 12),
+          LogsPanel(
+            key: ValueKey('logs-${state.baseUrl}/${device.id}'),
+            logsUriBuilder: ({String? filter}) =>
+                state.client.logsStreamUri(device.id, filter: filter),
+          ),
+        ],
       ),
     );
   }

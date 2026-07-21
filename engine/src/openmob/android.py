@@ -8,6 +8,7 @@ from functools import cache
 from pathlib import Path
 
 from openmob.device import Device, DeviceError
+from openmob.logstream import LogStream, apply_filter
 
 KEYCODES: dict[str, int] = {
     "home": 3,
@@ -65,6 +66,76 @@ def parse_devices(output: str) -> list[tuple[str, str, str]]:
                 model = part.removeprefix("model:").replace("_", " ")
         devices.append((serial, state, model))
     return devices
+
+
+def parse_dropbox_crashes(output: str) -> list[dict[str, str]]:
+    """Parse `dumpsys dropbox --print data_app_crash` output into crash summaries.
+
+    Each entry starts with a `====...` separator followed by a
+    `YYYY-MM-DD HH:MM:SS data_app_crash (text, N bytes)` line, key/value headers
+    (Process, Package, ...), a blank line, then the exception + stack trace.
+    """
+    crashes = []
+    entries = re.split(r"^={10,}\s*$", output, flags=re.MULTILINE)
+    for entry in entries[1:]:
+        lines = entry.strip().splitlines()
+        if not lines:
+            continue
+        header = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) data_app_crash", lines[0])
+        if header is None:
+            continue
+        crash = {"date": header.group(1), "process": "", "exception": ""}
+        in_headers = True
+        for line in lines[1:]:
+            if in_headers:
+                if line.startswith("Process:"):
+                    crash["process"] = line.removeprefix("Process:").strip()
+                elif not line.strip():
+                    in_headers = False
+            elif line.strip():
+                crash["exception"] = line.strip()  # first line of the exception block
+                break
+        crashes.append(crash)
+    crashes.reverse()  # dropbox prints oldest first; we want newest first
+    return crashes
+
+
+def parse_crash_buffer(output: str) -> list[dict[str, str]]:
+    """Parse `logcat -d -b crash` output into crash summaries.
+
+    Crashes appear as AndroidRuntime blocks:
+        07-21 10:57:41.225  5776  5776 E AndroidRuntime: FATAL EXCEPTION: main
+        ... E AndroidRuntime: Process: com.example.app, PID: 5776
+        ... E AndroidRuntime: java.lang.RuntimeException: boom
+    """
+    prefix = re.compile(
+        r"^(?P<date>\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+\s+\d+\s+\d+\s+[EF] AndroidRuntime:\s?"
+        r"(?P<msg>.*)$"
+    )
+    crashes: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in output.splitlines():
+        match = prefix.match(line)
+        if match is None:
+            continue
+        msg = match.group("msg")
+        if msg.startswith("FATAL EXCEPTION"):
+            current = {"date": match.group("date"), "process": "", "exception": ""}
+            crashes.append(current)
+        elif current is not None:
+            if msg.startswith("Process:"):
+                current["process"] = msg.removeprefix("Process:").split(",")[0].strip()
+            elif not current["exception"] and not msg.startswith(("\t", "at ")):
+                current["exception"] = msg.strip()
+    crashes.reverse()
+    return crashes
+
+
+def parse_battery_level(output: str) -> int | None:
+    """Parse the `level:` line from `dumpsys battery` output."""
+    if match := re.search(r"^\s*level:\s*(\d+)\s*$", output, flags=re.MULTILINE):
+        return int(match.group(1))
+    return None
 
 
 def parse_wm_size(output: str) -> tuple[int, int]:
@@ -165,14 +236,68 @@ class AndroidDevice(Device):
         return [{"package": package, "name": package} for package in packages]
 
     def launch_app(self, package: str) -> None:
-        output = self._shell(
-            "monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"
-        )
+        output = self._shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
         if "No activities found" in output or "monkey aborted" in output:
             raise DeviceError(f"could not launch {package!r}")
 
-    def logs(self) -> str:
-        return self._shell("logcat", "-d", "-t", "500", timeout=60)
+    def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
+        # Over-fetch when filtering so `lines` matching lines usually survive the filter.
+        fetch = lines if not filter_str else max(lines * 10, 2000)
+        output = self._shell("logcat", "-d", "-t", str(fetch), timeout=60)
+        return apply_filter(output, filter_str, lines)
+
+    def stream_logs(self) -> LogStream:
+        # -T 1: start from the most recent line instead of replaying the whole buffer.
+        return LogStream([find_adb(), "-s", self._serial, "logcat", "-T", "1"])
+
+    def crash_reports(self, limit: int = 5) -> list[dict[str, str]]:
+        crashes = parse_dropbox_crashes(
+            self._shell("dumpsys", "dropbox", "--print", "data_app_crash", timeout=60)
+        )
+        if not crashes:  # dropbox can be empty/pruned; fall back to the crash log buffer
+            crashes = parse_crash_buffer(self._shell("logcat", "-d", "-b", "crash", timeout=60))
+        return crashes[:limit]
+
+    def open_url(self, url: str) -> None:
+        output = self._shell("am", "start", "-a", "android.intent.action.VIEW", "-d", url)
+        if "Error" in output or "does not exist" in output:
+            raise DeviceError(f"could not open {url!r}: {output.strip()}")
+
+    def clear_app_data(self, package: str) -> None:
+        output = self._shell("pm", "clear", package, timeout=60)
+        if "Success" not in output:
+            raise DeviceError(f"pm clear failed: {output.strip()}")
+
+    def force_stop(self, package: str) -> None:
+        self._shell("am", "force-stop", package)
+
+    def push_file(self, local_path: str, device_path: str) -> None:
+        if not Path(local_path).is_file():
+            raise DeviceError(f"local file not found: {local_path}")
+        self._run("push", local_path, device_path, timeout=300)
+
+    def pull_file(self, device_path: str, local_path: str) -> None:
+        Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+        self._run("pull", device_path, local_path, timeout=300)
+
+    def system_info(self) -> dict[str, str | int]:
+        info: dict[str, str | int] = {
+            "os_version": self._shell("getprop", "ro.build.version.release").strip(),
+            "sdk": self._shell("getprop", "ro.build.version.sdk").strip(),
+            "model": self._shell("getprop", "ro.product.model").strip(),
+            "manufacturer": self._shell("getprop", "ro.product.manufacturer").strip(),
+        }
+        if (level := parse_battery_level(self._shell("dumpsys", "battery"))) is not None:
+            info["battery_percent"] = level
+        return info
+
+    def forward_tcp(self, remote_port: int) -> int:
+        """Forward a free local TCP port to `remote_port` on the device; return the local port."""
+        output = self._run("forward", "tcp:0", f"tcp:{remote_port}").decode().strip()
+        try:
+            return int(output)
+        except ValueError as exc:
+            raise DeviceError(f"unexpected adb forward output: {output!r}") from exc
 
 
 def discover() -> list[AndroidDevice]:
