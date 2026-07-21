@@ -307,8 +307,30 @@ class AndroidDevice(Device):
 
     def launch_app(self, package: str) -> None:
         output = self._shell("monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1")
-        if "No activities found" in output or "monkey aborted" in output:
+        if "Events injected: 1" in output:
+            return
+        if "No activities found" in output:
+            raise DeviceError(f"could not launch {package!r}: no launchable activity")
+        # monkey aborts on some system images (e.g. "SYS_KEYS has no physical keys",
+        # exit 251 on 16KB-page emulator images). Fall back to resolving the launcher
+        # activity and starting it directly.
+        component = self._resolve_launcher(package)
+        if component is None:
             raise DeviceError(f"could not launch {package!r}")
+        start = self._shell("am", "start", "-n", component)
+        if "Error" in start or "does not exist" in start:
+            raise DeviceError(f"could not launch {package!r}: {start.strip()}")
+
+    def _resolve_launcher(self, package: str) -> str | None:
+        brief = self._shell(
+            "cmd", "package", "resolve-activity", "--brief",
+            "-c", "android.intent.category.LAUNCHER", package,
+        )
+        for line in reversed(brief.splitlines()):
+            line = line.strip()
+            if "/" in line and " " not in line:
+                return line
+        return None
 
     def logs(self, lines: int = 200, filter_str: str | None = None) -> str:
         # Over-fetch when filtering so `lines` matching lines usually survive the filter.
