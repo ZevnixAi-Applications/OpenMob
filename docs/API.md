@@ -3,7 +3,19 @@
 The engine serves a local HTTP + WebSocket API for UIs, and an MCP server for AI agents. Both are thin layers over the same device abstraction.
 
 - Base URL: `http://127.0.0.1:8930/api/v1`
-- No auth in v0 (localhost only, bind 127.0.0.1).
+- No auth in v0 (binds 127.0.0.1 by default; pass `--host 0.0.0.0` to `openmob serve` to allow LAN clients).
+
+## mDNS discovery
+
+`openmob serve` advertises itself over mDNS/Bonjour as an `_openmob._tcp.local.` service so apps can find engines on the local network:
+
+- Instance name: `OpenMob Engine on <hostname>`
+- Port: the serve port (default 8930)
+- TXT record: `version=<engine version>`
+
+The service is unregistered cleanly on shutdown. Disable advertising with `openmob serve --no-mdns`. Advertising is best-effort: if registration fails the API still serves. Note that discovery across devices only helps if the engine is reachable from them, i.e. it was started with `--host 0.0.0.0`.
+
+Verify from macOS with `dns-sd -B _openmob._tcp local.`
 
 ## REST
 
@@ -18,7 +30,7 @@ The engine serves a local HTTP + WebSocket API for UIs, and an MCP server for AI
 | POST | `/devices/{id}/key` | `{"key":"home"\|"back"\|"power"\|"volume_up"\|"volume_down"\|"enter"}` |
 | POST | `/devices/{id}/install` | multipart `file` (.apk / .ipa) |
 | POST | `/devices/{id}/uninstall` | `{"package":"com.example.app"}` |
-| GET | `/devices/{id}/apps` | `[{"package","name"}]` |
+| GET | `/devices/{id}/apps` | `[{"package","name"}]` — `name` is the friendly app label where resolvable (best-effort, cached), else the package id |
 | POST | `/devices/{id}/launch` | `{"package":"com.example.app"}` |
 
 All action endpoints return `{"ok":true}` or HTTP 4xx/5xx with `{"detail":"..."}`.
@@ -35,6 +47,6 @@ Server pushes binary JPEG frames (one WebSocket binary message per frame) at ~5�
 
 ## CLI
 
-- `openmob serve` — start HTTP/WS server on port 8930 (`--port` to override)
+- `openmob serve` — start HTTP/WS server on port 8930 (`--port` to override, `--host 0.0.0.0` for LAN access, `--no-mdns` to disable mDNS advertising)
 - `openmob mcp` — start MCP stdio server
 - `openmob devices` — print detected devices
