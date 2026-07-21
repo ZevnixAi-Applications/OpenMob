@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "openmob": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "/Users/zevnix/Desktop/C DRIVE/Apps/OpenMob/engine",
+        "openmob",
+        "mcp"
+      ]
+    }
+  }
+}
