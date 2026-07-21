@@ -60,6 +60,11 @@ class AppState extends ChangeNotifier {
   /// until polling reports them running.
   final Set<String> launchingNames = {};
 
+  /// Names of just-launched virtual devices to auto-open as a tab (inside
+  /// OpenMob) as soon as they come online, so the user sees the mirror without
+  /// clicking. Cleared once opened.
+  final Set<String> _autoOpenNames = {};
+
   /// Most recent action/engine error, shown transiently in the UI.
   String? lastError;
 
@@ -211,6 +216,7 @@ class AppState extends ChangeNotifier {
     } catch (_) {
       virtualDevices = [];
     }
+    _autoOpenLaunched();
     _notify();
   }
 
@@ -219,6 +225,8 @@ class AppState extends ChangeNotifier {
     _notify();
     try {
       await _client.launchVirtualDevice(name);
+      // Once it comes online, open it as a tab inside OpenMob automatically.
+      _autoOpenNames.add(name);
       if (lastError != null) {
         lastError = null;
         _notify();
@@ -227,6 +235,37 @@ class AppState extends ChangeNotifier {
       launchingNames.remove(name);
       lastError = e is EngineException ? e.message : 'Engine unreachable';
       _notify();
+    }
+  }
+
+  /// Registers [name] to be auto-opened as a tab when it next comes online
+  /// (used after creating a device that is then launched).
+  void autoOpenWhenOnline(String name) => _autoOpenNames.add(name);
+
+  /// Opens any just-launched virtual device as a tab once it appears online in
+  /// [devices]. AVDs resolve to an adb serial and simulators to a UDID via the
+  /// virtual-device list's device_id.
+  void _autoOpenLaunched() {
+    if (_autoOpenNames.isEmpty) return;
+    final known = {for (final d in devices) d.id};
+    for (final name in _autoOpenNames.toList()) {
+      VirtualDevice? match;
+      for (final v in virtualDevices) {
+        if (v.name == name) {
+          match = v;
+          break;
+        }
+      }
+      // Drop names the engine no longer lists at all (e.g. deleted).
+      if (match == null) {
+        _autoOpenNames.remove(name);
+        continue;
+      }
+      final id = match.deviceId;
+      if (match.running && id != null && known.contains(id)) {
+        openDevice(id);
+        _autoOpenNames.remove(name);
+      }
     }
   }
 

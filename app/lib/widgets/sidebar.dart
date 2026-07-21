@@ -5,6 +5,7 @@ import '../api/engine_client.dart';
 import '../services/engine_launcher.dart';
 import '../state/app_state.dart';
 import '../theme.dart';
+import 'create_device_dialog.dart';
 import 'engine_discovery_dialog.dart';
 
 class Sidebar extends StatelessWidget {
@@ -56,7 +57,20 @@ class Sidebar extends StatelessWidget {
                         onTap: () => state.openDevice(device.id),
                       ),
                     ),
-                const _SectionHeader(title: 'VIRTUAL DEVICES'),
+                _SectionHeader(
+                  title: 'VIRTUAL DEVICES',
+                  trailing: Tooltip(
+                    message: 'Create a new virtual device',
+                    child: IconButton(
+                      icon: const Icon(Icons.add, size: 16),
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (_) => const CreateDeviceDialog(),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                ),
                 if (state.virtualDevices.isEmpty)
                   _SectionNote(
                     text: state.engineOnline

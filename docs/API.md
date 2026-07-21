@@ -33,7 +33,10 @@ Verify from macOS with `dns-sd -B _openmob._tcp local.`
 | GET | `/devices/{id}/apps` | `[{"package","name"}]` — `name` is the friendly app label where resolvable (best-effort, cached), else the package id |
 | POST | `/devices/{id}/launch` | `{"package":"com.example.app"}` |
 | GET | `/virtual-devices` | `[{"name","platform":"android"\|"ios","kind":"avd"\|"simulator","state":"running"\|"stopped","device_id":str\|null}]` |
-| POST | `/virtual-devices/launch` | `{"name":"Pixel_7"}` → `{"ok":true,"note":"booting"\|"already running"}` (idempotent) |
+| POST | `/virtual-devices/launch` | `{"name":"Pixel_7","windowed":false}` → `{"ok":true,"note":"booting"\|"already running"}` (idempotent; headless unless `windowed`) |
+| GET | `/virtual-devices/create-options` | `{"android":{"available","reason","device_profiles":[{"id","name"}],"system_images":[{"id","api","tag","abi","installed"}]},"ios":{"available","reason","device_types":[{"id","name"}],"runtimes":[{"id","name","available"}]}}` |
+| POST | `/virtual-devices/create` | `{"platform":"android"\|"ios","name",...}` (Android: `device_profile`,`system_image`; iOS: `device_type`,`runtime`) → create-job snapshot |
+| GET | `/virtual-devices/create/jobs/{id}` | `{"id","platform","name","status":"queued"\|"running"\|"succeeded"\|"failed","progress":int\|null,"log":[str],"error":str\|null,"device_id":str\|null}` |
 
 ### Developer tools (see docs/DEVTOOLS.md)
 
