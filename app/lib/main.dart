@@ -147,8 +147,9 @@ class _MainPane extends StatelessWidget {
           const SizedBox(height: 12),
           LogsPanel(
             key: ValueKey('logs-${state.baseUrl}/${device.id}'),
-            logsUriBuilder: ({String? filter}) =>
-                state.client.logsStreamUri(device.id, filter: filter),
+            deviceId: device.id,
+            platform: device.platform,
+            client: state.client,
           ),
         ],
       ),
