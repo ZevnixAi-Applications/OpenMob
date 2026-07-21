@@ -210,7 +210,7 @@ def parse_sim_log(output: str) -> str:
             continue
         if stripped.startswith("Filtering the log data"):
             continue
-        if stripped.startswith("Timestamp") and "Type" in stripped:
+        if stripped.startswith("Timestamp"):  # the column header (real entries start with a date)
             continue
         kept.append(line)
     return "\n".join(kept)
