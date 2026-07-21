@@ -69,6 +69,17 @@ class EngineClient {
     );
   }
 
+  /// WebSocket URI for the live log stream of [deviceId].
+  Uri logsStreamUri(String deviceId, {String? filter}) {
+    final u = Uri.parse(baseUrl);
+    return u.replace(
+      scheme: u.scheme == 'https' ? 'wss' : 'ws',
+      path: '/api/v1/devices/$deviceId/logs/stream',
+      queryParameters:
+          (filter == null || filter.isEmpty) ? null : {'filter': filter},
+    );
+  }
+
   /// Returns the engine version, or throws if the engine is unreachable.
   Future<String> health() async {
     final res = await http.get(_api('/health')).timeout(_timeout);
