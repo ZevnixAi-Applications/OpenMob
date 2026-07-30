@@ -1,5 +1,8 @@
 # OpenMob
 
+[![Release](https://img.shields.io/github/v/release/ZevnixAi-Applications/OpenMob)](https://github.com/ZevnixAi-Applications/OpenMob/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Your phones, on your desktop — for you and your AI. Mirror, tap, type, install,
 log, and debug real Android and iOS devices from one window, over USB or Wi-Fi.
 Runs on **macOS and Windows** (Android + emulators everywhere; iOS is macOS-only).
@@ -48,6 +51,11 @@ page, download the installer for your OS:
 - **Windows** — `OpenMob-<version>-windows-setup.exe`; run it to install to
   Program Files with a Start Menu shortcut. Windows controls **Android devices
   and emulators** (iOS needs macOS).
+
+> **Windows installer:** the current release, `v0.1.0`, predates Windows support
+> and ships the macOS DMG only. The `.exe` is built by CI from the next release
+> onward — until then, Windows users should
+> [build from source](#build-from-source) (`flutter build windows`).
 
 > On macOS the app is signed with a Developer ID; until it's notarized, the first
 > launch needs a right-click → **Open** to get past Gatekeeper. Requires
